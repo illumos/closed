@@ -1,0 +1,4 @@
+(on-closed-bins-nd.i386.tar.bz2) = da3ca1ea24972ba6a01169265d8d38a45789ed7cc45334bfe026c108b1d2ff56
+(on-closed-bins-nd.sparc.tar.bz2) = 88b8c4032c1d759abec98e346085e0ba350fa485f28a12ff63f247e4125916e3
+(on-closed-bins.i386.tar.bz2) = 18e82bace8481dca62586e4bdff7f6b44fc63b41443799929e4d4b2187e98535
+(on-closed-bins.sparc.tar.bz2) = ce5425387a61dbf6842f8278771f244d2b860786a9d296b72b61e6721f8b7398

@@ -1,0 +1,6942 @@
+\ ident	"%Z%%M%	%I%	%E% SMI"
+\ Copyright 2005 Sun Microsystems, Inc.  All rights reserved.
+\ Use is subject to license terms.
+\
+\ CDDL HEADER START
+\
+\ The contents of this file are subject to the terms of the
+\ Common Development and Distribution License, Version 1.0 only
+\ (the "License").  You may not use this file except in compliance
+\ with the License.
+\
+\ You can obtain a copy of the license at usr/src/OPENSOLARIS.LICENSE
+\ or http://www.opensolaris.org/os/licensing.
+\ See the License for the specific language governing permissions
+\ and limitations under the License.
+\
+\ When distributing Covered Code, include this CDDL HEADER in each
+\ file and include the License file at usr/src/OPENSOLARIS.LICENSE.
+\ If applicable, add the following below this CDDL HEADER, with the
+\ fields enclosed by brackets "[]" replaced with your own identifying
+\ information: Portions Copyright [yyyy] [name of copyright owner]
+\
+\ CDDL HEADER END
+\
+
+hex
+
+only forth also definitions
+vocabulary kdbg-words
+also kdbg-words definitions
+
+defer p@
+defer p!
+['] x@ is p@
+['] x! is p!
+
+8 constant ptrsize
+
+d# 32 constant nbitsminor
+h# ffffffff constant maxmin
+\
+\ Copyright 2007 Sun Microsystems, Inc.  All rights reserved.
+\ Use is subject to license terms.
+\
+\ CDDL HEADER START
+\
+\ The contents of this file are subject to the terms of the
+\ Common Development and Distribution License (the "License").
+\ You may not use this file except in compliance with the License.
+\
+\ You can obtain a copy of the license at usr/src/OPENSOLARIS.LICENSE
+\ or http://www.opensolaris.org/os/licensing.
+\ See the License for the specific language governing permissions
+\ and limitations under the License.
+\
+\ When distributing Covered Code, include this CDDL HEADER in each
+\ file and include the License file at usr/src/OPENSOLARIS.LICENSE.
+\ If applicable, add the following below this CDDL HEADER, with the
+\ fields enclosed by brackets "[]" replaced with your own identifying
+\ information: Portions Copyright [yyyy] [name of copyright owner]
+\
+\ CDDL HEADER END
+\
+
+\ #pragma ident	"%Z%%M%	%I%	%E% SMI"
+
+h# 7ff constant v9bias
+h# modules-val-here value modules-val
+h# primaries-v-here value primaries-val
+
+0 value exit-behavior
+
+\ enable forthdebug when entering interpreter
+' kdbg-words is debugger-vocabulary-hook
+
+: next-word ( alf voc-acf -- false | alf' true )
+   over  if  drop  else  nip >threads  then
+   another-link?  if  >link true  else  false  then
+;
+
+\ another? that allows nesting
+: another? ( alf voc-acf -- false | alf' voc-acf anf true )
+   dup >r next-word  if         ( alf' ) ( r: voc-acf )
+      r> over l>name true       ( alf' voc-acf anf true )
+   else                         ( ) ( r: voc-acf )
+      r> drop false             ( false )
+   then
+;
+
+
+create err-no-sym ," symbol not found"
+
+\ guard against bad symbols
+: $symbol ( adr,len -- x )
+   $handle-literal? 0= if  err-no-sym throw  then
+;
+
+\ Compile the value of the symbol if known,
+\ otherwise arrange to look it up later at run time.
+: symbol ( -- n ) \ symbol-name
+   parse-word 2dup 2>r $handle-literal?  if   ( r: sym$ )
+      2r> 2drop
+   else
+      +level
+      2r> compile (") ", compile $symbol
+      -level
+   then
+; immediate
+
+
+\ print in octal
+: .o ( n -- ) base @ >r octal . r> base ! ;
+
+\ redefine type, cstrlen & cscount to support 64 bit addresses
+: type ( adr len -- ) bounds ?do i c@ emit loop ;
+
+: cstrlen ( cstr -- len )
+   dup begin
+      dup c@
+   while
+      char+
+   repeat swap -
+;
+
+: cscount ( cstr -- adr,len )  dup cstrlen  ;
+
+
+\ add carriage return if found linefeed
+: lf-type ( adr len -- )
+   bounds ?do
+      i c@
+      dup linefeed = if
+         cr drop
+      else
+         emit
+      then
+   loop
+;
+
+\ print at most cnt characters of a string
+: .nstr ( str cnt -- )
+   over if
+      over cscount nip min
+      bounds ?do i c@ dup 20 80 within if emit else drop then loop
+   else
+      ." NULL " 2drop
+   then
+;
+
+\ print string
+: .str ( str -- )
+   ?dup  if
+      cscount type
+   else
+      ." NULL"
+   then
+;
+
+\ new actions
+: print 2 perform-action ;
+: index 3 perform-action ;
+: sizeof 1 perform-action ;
+
+\ indent control
+-8 value plevel
+: +plevel ( -- ) plevel 8 + to plevel ;
+: -plevel ( -- ) plevel 8 - to plevel ;
+: 0plevel ( -- ) -8 to plevel ;
+
+defer print-offset
+' noop is print-offset
+
+: show-offset ( apf -- apf ) ." [ " dup @ . ." ] " ;
+: offset-on ['] show-offset is print-offset ;
+: offset-off ['] noop is print-offset ;
+
+\ new print words
+: name-print ( addr apf -- addr apf )
+   print-offset
+   plevel spaces dup body>
+   .name ." = "
+;
+
+: voc-print ( addr acf -- )
+   ??cr +plevel
+   0 swap                         ( addr 0 acf )
+   begin  another?  while         ( addr alf acf anf )
+      3 pick swap name> print     ( addr alf acf )
+      exit?  if                   ( addr alf acf )
+         0plevel true throw       ( )
+      then                        ( addr alf acf )
+   repeat                         ( addr )
+   drop -plevel                   ( )
+;
+
+
+3 actions ( offset print-acf )
+action: ( addr apf -- x )       @ + x@ ;        \ get
+action: ( addr x apf -- )       @ rot + x! ;    \ set
+action: ( addr apf -- )
+   name-print
+   dup @ rot + x@ swap         ( x apf )
+   na1+ @ execute cr ;                          \ print
+
+: ext-field ( acf offset -- ) create , , use-actions ;
+
+
+3 actions ( offset print-acf )
+action: ( addr apf -- l )       @ + l@ ;        \ get
+action: ( addr l apf -- )       @ rot + l! ;    \ set
+action: ( addr apf -- )
+   name-print
+   dup @ rot + l@ swap          ( l apf )
+   na1+ @ execute cr ;                          \ print
+
+: long-field ( acf offset -- ) create , , use-actions ;
+
+
+3 actions ( offset print-acf )
+action: ( addr apf -- w )       @ + w@ ;        \ get
+action: ( addr w apf -- )       @ rot + w! ;    \ set
+action: ( addr apf -- )
+   name-print
+   dup @ rot + w@ swap          ( w apf )
+   na1+ @ execute cr ;                          \ print
+
+: short-field ( acf offset -- ) create , , use-actions ;
+
+
+3 actions ( offset print-acf )
+action: ( addr apf -- c )       @ + c@ ;        \ get
+action: ( addr c apf -- )       @ rot + c! ;    \ set
+action: ( addr apf -- )
+   name-print
+   dup @ rot + c@ swap          ( c apf )
+   na1+ @ execute cr ;                          \ print
+
+: byte-field ( acf offset -- ) create , , use-actions ;
+
+
+3 actions ( offset print-acf )
+action: ( addr apf -- ptr )     @ + p@ ;        \ get
+action: ( addr l apf -- )       @ rot + p! ;    \ set
+action: ( addr apf -- )
+   name-print
+   dup @ rot + p@ ?dup  if     ( apf ptr )
+      swap na1+ @ execute      ( )
+   else                        ( apf )
+      drop ." NULL"            ( )
+   then                        ( )
+   cr ;                                         \ print
+ 
+: ptr-field ( acf offset -- ) create , , use-actions ;
+
+
+3 actions ( offset print-acf )
+action: ( addr apf -- saddr )   @ + ;           \ get
+action: ( -- )                  quit ;          \ error
+action: ( addr apf -- )
+   name-print
+   dup @ rot + swap             ( saddr apf )
+   na1+ @ execute ??cr ;                       \ print
+ 
+: struct-field ( acf offset -- ) create , , use-actions ;
+
+
+4 actions ( offset inc limit print-acf fetch-acf )
+action: ( addr apf -- araddr )  @ + ;           \ get
+action: ( -- )                  quit ;          \ set
+action: ( addr apf -- )
+   name-print
+   dup @ rot + swap         ( base apf )
+   na1+ dup @ -rot          ( inc base apf' )
+   na1+ dup @ swap          ( inc base limit apf' )
+   na1+ dup @ swap          ( inc base limit p-acf apf' )
+   na1+ @ 2swap             ( inc p-acf f-acf base limit )
+   bounds  do               ( inc p-acf f-acf )
+      3dup                  ( inc p-acf f-acf inc p-acf f-acf )
+      i swap execute        ( inc f-acf p-acf inc p-acf n )
+      swap execute          ( inc f-acf p-acf inc )
+   +loop                    ( inc f-acf p-acf )
+   3drop ??cr ;                                 \ print
+action: ( addr index apf -- ith-item )
+   rot swap                 ( index addr apf )
+   dup @ rot + swap         ( index base apf )
+   na1+ dup @ 3 roll *      ( base apf' ioff )
+   rot + swap 3 na+ @       ( iaddr f-acf )
+   execute ;                                    \ index
+
+: array-field ( f-acf p-acf limit inc offset -- ) create , , , , , use-actions ;
+
+
+3 actions ( offset mask shift print-acf )
+action: ( addr apf -- bits )
+   dup @ rot + l@ swap         ( b-word apf )
+   na1+ dup @ rot and swap     ( b-masked apf' )
+   na1+ @ >> ;                               \ get
+action: ( addr bits apf -- )
+   rot over @ + dup l@ 2swap   ( b-addr b-word nbits apf )
+   na1+ dup @ -rot             ( b-addr b-word mask nbits apf' )
+   na1+ @ << over and          ( b-addr b-word mask nb-masked )
+   -rot invert and or swap l! ;              \ set
+action: ( addr apf -- )
+   name-print
+   dup @ rot + l@ swap         ( b-word apf )
+   na1+ dup @ rot and swap     ( b-mask apf' )
+   na1+ dup @ rot swap >> swap ( bits apf' )
+   na1+ @ execute cr ;                       \ print
+
+: bits-field ( acf shift mask offset -- ) create , , , , use-actions ;
+
+
+2 actions ( voc-acf size )
+action: ( apf -- )              @ voc-print ;   \ print vocabulary
+action: ( apf -- size )         na1+ @ ;        \ sizeof
+
+: c-struct ( size acf -- ) create , , use-actions ;
+
+: c-enum ( {str value}+ n-values -- )
+   create   ( n-values {value str}+ )
+      dup 2* 1+ 0  do  ,  loop
+   does>    ( enum apf -- )
+      dup @ 0  do                     ( enum apf' )
+         na1+ 2dup @ =  if            ( enum apf' )
+            na1+ @ .str               ( enum )
+            drop unloop exit          ( )
+         then                         ( enum apf' )
+         na1+                         ( enum apf' )
+      loop                            ( enum apf' )
+      drop .d cr                      ( )
+;
+
+\ end kdbg section
+
+
+vocabulary Shdr-words
+h# 40 constant Shdr-sz
+40 ' Shdr-words c-struct .Shdr
+also Shdr-words definitions
+
+' .x 38 ext-field sh_entsize
+' .x 30 ext-field sh_addralign
+' .x 2c long-field sh_info
+' .x 28 long-field sh_link
+' .x 20 ext-field sh_size
+' .x 18 ext-field sh_offset
+' .x 10 ext-field sh_addr
+' .x 8 ext-field sh_flags
+' .x 4 long-field sh_type
+' .x 0 long-field sh_name
+
+kdbg-words definitions
+previous
+
+\ end Shdr section
+
+
+vocabulary Sym-words
+h# 18 constant Sym-sz
+18 ' Sym-words c-struct .Sym
+also Sym-words definitions
+
+' .x 10 ext-field st_size
+' .x 8 ext-field st_value
+' .x 6 short-field st_shndx
+' .x 5 byte-field st_other
+' .x 4 byte-field st_info
+' .x 0 long-field st_name
+
+kdbg-words definitions
+previous
+
+\ end Sym section
+
+
+vocabulary modctl-words
+h# 90 constant modctl-sz
+90 ' modctl-words c-struct .modctl
+also modctl-words definitions
+
+' .x 88 ptr-field mod_requisite_loading
+' .d 80 long-field mod_gencount
+' .d 78 ext-field mod_text_size
+' .x 70 ptr-field mod_text
+' .d 6c long-field mod_nenabled
+' .d 68 long-field mod_loadcnt
+' .x 58 ptr-field mod_requisites
+' .x 53 byte-field mod_delay_unload
+' .x 52 byte-field mod_loadflags
+' .x 51 byte-field mod_installed
+' .x 50 byte-field mod_loaded
+' .d 4c long-field mod_ref
+' .x 4a byte-field mod_prim
+' .x 49 byte-field mod_want
+' .x 48 byte-field mod_busy
+' .str 40 ptr-field mod_modname
+' .str 38 ptr-field mod_filename
+' .x 30 ptr-field mod_linkage
+' .x 28 ptr-field mod_modinfo
+' .x 20 ptr-field mod_inprogress_thread
+' .x 18 ptr-field mod_mp
+' .d 10 long-field mod_id
+' .x 8 ptr-field mod_prev
+' .x 0 ptr-field mod_next
+
+kdbg-words definitions
+previous
+
+\ end modctl section
+
+
+vocabulary module-words
+h# 178 constant module-sz
+178 ' module-words c-struct .module
+also module-words definitions
+
+' .str e8 ptr-field filename
+' .x e0 ext-field bss
+' .d d8 ext-field bss_size
+' .d d4 long-field bss_align
+' .d d0 long-field nsyms
+' .x c8 ptr-field chains
+' .x c0 ptr-field buckets
+' .d b8 long-field hashsize
+' .x b0 ptr-field strings
+' .x a8 ptr-field symtbl
+' .d a0 long-field symtbl_section
+' .x 98 ptr-field data
+' .x 90 ptr-field text
+' .x 88 ext-field data_size
+' .x 80 ext-field text_size
+' .x 78 long-field flags
+' .x 70 ptr-field symspace
+' .d 68 ext-field symsize
+' .str 60 ptr-field depends_on
+' .x 58 ptr-field strhdr
+' .x 50 ptr-field symhdr
+' .x 48 ptr-field shdrs
+' .d 0 long-field total_allocated
+
+kdbg-words definitions
+previous
+
+\ end module section
+
+
+vocabulary modctl_list-words
+h# 10 constant modctl_list-sz
+10 ' modctl_list-words c-struct .modctl_list
+also modctl_list-words definitions
+
+' .x 8 ptr-field modl_modp
+' .x 0 ptr-field modl_next
+
+kdbg-words definitions
+previous
+
+\ end modctl_list section
+
+
+: .module-list ( -- )
+   [ also modctl-words ]
+   modules-val dup            ( mod0 mod0 )
+   begin                      ( mod0 mod )
+      dup mod_next swap       ( mod0 mod' mod )
+      mod_mp ?dup  if         ( mod0 mod' mp )
+         .module cr           ( mod0 mod' )
+      then                    ( mod0 mod' )
+   2dup =  until              ( mod0 mod' )
+   2drop                      ( )
+   [ previous ]
+;
+
+: .module-name ( modctl_p -- 0 )
+   [ also modctl-words ]
+   [ also module-words ]
+   dup b u.r mod_mp dup c u.r ."  "  ( mp )
+   dup if
+      filename .str 0
+   then cr
+   [ previous ]
+   [ previous ]
+;
+
+: =module-name ( name$ modctl_p -- name$ modctl_p|0 )
+   [ also modctl-words ]
+   >r 2dup r@ mod_modname cscount compare ( name$ =? ) ( R: modctl_p )
+   r> swap if drop 0 then
+   [ previous ]
+;
+
+: modctl-action ( ??? f modctl_p -- ??? f modctl_p result|0 )
+   [ also modctl-words ]
+   2dup 2>r         ( ??? f modctl_p )    ( R: f modctl_p )
+   dup if           ( ??? f modctl_p )    ( R: f modctl_p )
+      swap execute  ( ??? result )  ( R: f modctl_p )
+   else             ( ??? f 0 )     ( R: f modctl_p )
+      nip           ( ??? 0 )       ( R: f modctl_p )
+   then             ( ??? result|0) ( R: f modctl_p )
+   2r> rot          ( ??? f modctl_p result|0 )
+   [ previous ]
+;
+ 
+: module-op ( ??? f modctl -- ??? f modctl|modctl-n result|0 )
+   [ also modctl-words ]
+   dup begin            ( ??? f mod0 mod )
+      swap >r           ( ??? f mod )         ( R: mod0 )
+      modctl-action     ( ??? f mod result )  ( R: mod0 )
+      ?dup if
+         r> drop exit   ( ??? f mod result )
+      then              ( ??? f mod )         ( R: mod0 )
+      mod_next r> swap  ( ??? f mod0 mod' )
+   2dup =  until        ( ??? f mod0 mod' )
+   drop 0               ( ??? f mod0 0 )
+   [ previous ]
+;
+
+: .module-names ( -- )
+   ['] .module-name modules-val module-op 3drop
+;
+
+: module-locate ( name$ -- name$ modctl_p|0 )
+   ['] =module-name
+   modules-val    ( name$ '=module-name mod0 )
+   module-op      ( name$ '=module-name modctl_p result )
+   nip nip        ( name$ result )
+;
+
+0 value sym-key
+
+: hash-char ( key char -- key' )
+   swap 4 << + dup    ( key' key' ) \ key' = char + key << 4
+   f d# 28 << and     ( key' g  )   \ g = key' & 0xf0000000
+   dup if             ( key' g  )
+      tuck            ( g key' g )
+      d# 24 >> xor    ( g key'' )   \ key'' = key' ^ (g >> 24)
+      swap            ( key'' g )
+   then               ( key   g )
+   not and            ( key&~g  )
+;
+
+: hash-sym ( sym$ -- )
+   bounds 0 -rot            ( 0 hi lo )
+   do i c@ hash-char loop   ( key )
+   to sym-key
+;
+
+: valid-sp? ( sp -- true | false )
+   [ also Sym-words ]
+   dup st_info f and  ( sp sp->st_info&f )
+   4 <>               ( sp !=STT_FILE )
+   swap st_shndx dup  ( !=STT_FILE sp->st_shndx sp->st_shndx )
+   0 <> swap fff2 <>  ( !=STT_FILE !=SHN_UNDEF != SHN_COMMON )
+   and and            ( true | false )
+   [ previous ]
+;
+
+: field>offset  ( field-word-addr -- offset-in-bytes )
+   >body dup l@ swap 1 la+ l@ swap lxjoin
+;
+
+: module>symid ( mp -- mp->buckets[key%hashsize] )
+   [ also module-words ]
+   sym-key over   ( mp key mp )
+   hashsize mod   ( mp key%hashsize )
+   /w * swap      ( key%hashsize*2 mp )
+   buckets + w@   ( mp->buckets[key%hashsize] )
+   [ previous ]
+;
+
+
+: symid>sym ( mp symid -- mp sp )
+   [ also Shdr-words ]
+   [ also module-words ]
+   >r dup symhdr sh_entsize  ( mp mp->symhdr->sh_entsize ) ( R: symid )
+   r> * over symtbl +
+   [ previous ]
+   [ previous ]
+;
+
+: mod-sym>value ( sym$ modctl_p -- sym$ adr|0 )   \ sym-key must be valid
+   [ also modctl-words ]
+   mod_mp               ( sym$ mp )
+   [ previous ]
+   dup 0= if exit then  ( sym$ 0 )
+
+   [ also module-words ]
+   [ also Sym-words ]
+   dup module>symid     ( sym$ mp id )      \ id = mp->buckets[key%hashsize]
+   begin dup while      ( sym$ mp id )
+      dup >r            ( sym$ mp id )           ( R: id )
+      symid>sym         ( sym$ mp sp )           ( R: id )
+
+      dup >r st_name    ( sym$ mp sp->st_name )  ( R: id sp )
+      over strings +    ( sym$ mp name1 )   \ name1 = sp->st_name + mp->strings
+      cscount rot       ( sym$ name1$ mp )       ( R: id sp )
+      >r 2over compare  ( sym$ strcmp )          ( R: id sp mp )
+
+      0= r> swap        ( sym$ mp !strcmp )      ( R: id sp )
+      r> dup valid-sp?  ( sym$ mp !strcmp sp ? ) ( R: id )
+      rot and r> swap   ( sym$ mp sp id good? )
+      if
+         drop st_value  ( sym$ mp adr )
+         nip exit       ( sym$ adr )
+      else
+         nip            ( sym$ mp id )
+      then
+      /w * over         ( sym$ mp id*2 mp )
+      chains + w@       ( sym$ mp id' )      \ id' = mp->chains[id] )
+   repeat               ( sym$ mp 0 )
+   nip                  ( sym$ 0 )
+   [ previous ]
+   [ previous ]
+;
+
+: unix-sym>value ( sym$ -- adr | 0 )
+   [ also modctl_list-words ]
+   [ also modctl-words ]
+   2dup hash-sym             ( sym$ )
+   primaries-val p@              ( sym$ modctl_list )
+   begin dup                 ( sym$ modctl_list modctl_list )
+   while                     ( sym$ modctl_list )
+      dup modl_modp mod_mp   ( sym$ modctl_list module )
+      ?dup if
+         2over rot           ( sym$ modctl_list sym$ module )
+         mod-sym>value       ( sym$ modctl_list sym$ adr|0 )
+         nip nip ?dup if     ( sym$ modctl_list adr|0 )
+            >r 3drop r> exit ( adr )
+         then                ( sym$ modctl_list )
+      then modl_next         ( sym$ modctl_list' )
+   repeat                    ( sym$ 0 )
+   nip nip                   ( 0 )
+   [ previous ]
+   [ previous ]
+;
+
+: primary-op ( ??? f -- ??? result|0 )
+   [ also modctl_list-words ]
+   primaries-val p@          ( ??? f modctl_list )
+   begin
+      dup >r modl_modp       ( ??? f modctl )         ( R: modctl_list )
+      modctl-action          ( ??? f modctl result )  ( R: modctl_list )
+      nip ?dup if            ( ??? f result )         ( R: modctl_list )
+         r> drop nip exit    ( ??? result )
+      then                   ( ??? f )                ( R: modctl_list )
+      r> modl_next dup       ( ??? f modctl_list' modctl_list' )
+   0= until                  ( ??? f modctl_list' )
+   2drop 0                   ( ??? 0 )
+   [ previous ]
+;
+
+: .primary-names ( -- )
+   ['] .module-name primary-op drop
+;
+
+: primary-sym>value ( sym$ -- adr | 0 )
+   2dup hash-sym ['] mod-sym>value primary-op nip nip
+;
+
+: mods-sym>value ( sym$ -- adr | 0 )
+   2dup hash-sym    \ sym-key
+   ['] mod-sym>value modules-val  ( sym$ 'mod-sym>value mod0 )
+   module-op                      ( sym$ 'mod-sym>value mod adr )
+   >r 2drop 2drop r>
+;
+
+: unix-mod?	( mod$ -- ==<unix||genunix>? )
+   2dup " unix" compare		( mod$ !=unix? )
+   if				( mod$ )	\ != unix
+      " genunix" compare	( !=genunix? )
+      if false else true then	( ==genunix? )
+   else				( mod$ )	\ ==unix
+      2drop true
+   then
+;
+
+: s>v ( sym$ -- adr | 0 )
+   ascii : left-parse-string	( mod-sym$ mod$ )
+   2swap dup			( mod$ mod-sym$ mod-sym-len )
+   if		\ there is a module name
+      2swap 2dup unix-mod?	( mod-sym$ mod$ ==<unix||genunix>? )
+      if 2drop	\ unix symbols	( mod-sym$ )
+         primary-sym>value	( adr | 0 )
+      else	\ non-unix mod	( mod-sym$ mod$ )
+         module-locate		( mod-sym$ mod$ modctl_p )
+         ?dup if   \ found mod	( mod-sym$ mod$ modctl_p )
+            >r 2drop 2dup	( mod-sym$ mod-sym$ ) ( R: modctl_p )
+            hash-sym r>		( mod-sym$ modctl_p ) \ must hash-sym before
+            mod-sym>value	( mod-sym$ adr|0 )    \ calling individual mod
+            nip nip		( adr|0 )
+         else			( mod-sym$ mod$ )
+            \ ." module " type ."  not found" cr 2drop 0 exit
+            2drop 2drop 0	( 0 )
+         then
+      then
+   else		\ global: sym$ is in mod$ due to left-parse-string
+      2drop 2dup		( mod$ mod$ )
+      primary-sym>value		( mod$ adr|0 )
+      ?dup if
+         nip nip		( adr | 0 )
+      else			( mod$ )
+         mods-sym>value		( adr | 0 )
+      then
+   then
+;
+
+: sym2value ( $sym -- adr true | $sym false )
+   2dup s>v	( $sym adr|0 )
+   dup if	( $sym adr|0 )
+      nip nip true	( adr true )
+   then		( $sym 0 )
+;
+
+' sym2value is sym>value	\ replace default sym>value lookup
+
+: segment-sym? ( adr base size -- true | false )
+   bounds     ( adr base+size base )
+   >r over r> ( adr base+size adr base )
+   >= -rot    ( adr>=base? adr base+size )
+   < and
+;
+
+: module-sym? ( adr mod_p -- true | false )
+   [ also module-words ]
+   2dup 2>r                ( adr mp )  ( R: adr mp )
+   dup text swap text_size ( adr mp->text mp->text_size ) ( R: adr mp )
+   segment-sym? if
+      2r> 2drop true exit
+   then
+   2r@                     ( adr mp ) ( R: adr mp )
+   dup data swap data_size ( adr mp->data mp->data_size ) ( R: adr mp )
+   segment-sym? if
+      2r> 2drop true exit
+   then
+   2r> dup bss             ( adr mp bss )
+   ?dup if
+      swap bss_size        ( adr bss bss_size )
+      segment-sym? exit    ( true | false )
+   then nip nip false
+   [ previous ]
+;
+
+-1 value symbol-off
+0 value sym-p
+
+: exam-sym? ( st_info -- valid? )
+   dup 4 >> 1 <> if          ( st_info ) \ !GLOBAL
+      dup 4 >> 0 = if        ( st_info ) \ LOCAL
+         f and               ( ELF_ST_TYPE )
+         dup 1 = swap 2 = or ( func-or-object? )
+      else
+         drop false          ( 0 )
+      then
+   then                      ( valid? )
+;
+
+: min-sym ( sym off -- sym )
+   dup 0< if
+      drop exit
+   then
+   dup symbol-off u> if
+      drop exit
+   then
+   to symbol-off
+   dup to sym-p
+;
+
+: module-value>sym ( value mod_p -- value )
+   -1 to symbol-off 0 to sym-p
+   [ also module-words ]
+   [ also Shdr-words ]
+   [ also Sym-words ]
+   >r r@ symhdr sh_entsize      ( value entsize )                ( R: mod_p )
+   r@ symtbl r> nsyms           ( value entsize sym0 nsyms )
+   1 do                         ( value entsize sym )
+      over + dup st_info        ( value entsize sym' st_info )
+      exam-sym? if             ( value entsize sym' )
+         >r over r@ st_value -  ( value entsize value-st_value ) ( R: sym' )
+         dup 0= if              ( value entsize 0 )              ( R: sym' )
+            to symbol-off
+            r> dup to sym-p     ( value entsize sym' )
+            leave
+         then                   ( value entsize value-st_value ) ( R: sym' )
+         r> swap min-sym        ( value entsize sym' )
+      then                      ( value entsize sym' )
+   loop                         ( value entsize sym' )
+   2drop                        ( value )
+   [ previous ]
+   [ previous ]
+   [ previous ]
+;
+
+: modctl-value>sym ( value modctl_p -- value adr )
+   [ also modctl-words ]
+   mod_mp               ( value mp )
+   [ previous ]
+   dup 0= if exit       ( value 0 )
+   then                 ( value mp )
+   2dup module-sym? if  ( value mp )
+      module-value>sym  ( value )
+      sym-p             ( value sym-p )
+   else
+      drop 0            ( value 0 )
+   then
+;
+
+: sym>str. ( modctl adr -- )
+   [ also Sym-words ]
+   [ also modctl-words ]
+   [ also module-words ]
+   st_name            ( modctl st_name )
+   over mod_mp        ( modctl st_name mod_p )
+   strings +          ( modctl name_p )
+   swap mod_modname   ( st_name mod_modname )
+   [ previous ]
+   [ previous ]
+   [ previous ]
+   cscount type ." :" cscount type
+   symbol-off if
+      ." +" symbol-off .
+   then
+;
+
+: v>s ( value -- true | value false )
+   ['] modctl-value>sym modules-val module-op ( value f modctl adr )
+   ?dup if
+      sym>str.		( value f )
+      2drop true exit	( true )
+   then			( value f modctl )
+   2drop false		( value false )
+;
+
+: v>m ( value -- modctl|0 )
+   ['] modctl-value>sym modules-val module-op	( value f modctl adr )
+   if						( value f modctl )
+      nip nip					( modctl )
+   else						( value f modctl )
+      3drop 0					( 0 )
+   then
+;
+
+h# modreloc-flagval value modreloc-flag-val
+: mod-reloc? ( modctl -- true | false )
+   [ also modctl-words ]
+   [ also module-words ]
+   mod_mp flags modreloc-flag-val and
+   [ previous ]
+   [ previous ]
+;
+
+: reloc? ( value -- reloc-flag-0x80 | 0 )
+   v>m			( modctl | 0 )
+   dup if		( modctl )
+      mod-reloc?	( reloc-flag | 0 )
+   then			( 0 )
+;
+
+: $sym-literal?  ( sym$ -- handled? )
+   2dup 2>r $dnumber? ?dup if		( empty | [ n .. ] #cells ) ( R: sym$ )
+      do-literal 2r> 2drop true exit	( true )
+   then	2r>				( sym$ )
+
+   2dup s>v ?dup if			( sym$ adr | sym$ )
+      nip nip 1 do-literal true exit	( adr true )
+   then					( sym$ )
+
+   name-to-value  if			( sym$ )
+      encode-string over here - allot	( encoded$ )
+      drop  name-to-value  call32  nip	( retval )
+      dup l@ l->n  if			( retval )
+         drop false			( true )
+      else				( pstr retval )
+         la1+ l@ 1 do-literal true	( true )
+      then exit				( flag )
+   then 2drop false			( flag )
+;
+
+' $sym-literal? is $handle-literal?
+
+: .addr>sym ( addr -- )
+   dup origin  u>=  if  .x  exit  then	( addr )
+   v>s if exit then		( addr )
+
+   value-to-name  if                ( addr )
+      value-to-name  call32         ( addr retval )
+      dup l@ l->n -1 <>  if         ( addr retval )
+         swap .x space              ( retval )
+         dup l@ swap la1+ cscount   ( offset name,len )
+         type  .offset  exit        (  )
+      then drop                     ( addr )
+   then                             ( addr )
+
+   \ No symbolic info available display as number
+   .x
+;
+
+also disassembler
+' .addr>sym is showaddr		\ dis
+' .addr>sym is .subname		\ ctrace
+previous
+
+   \ END OF SYMBOL - Do not edit, boot depends on it
+
+
+\ Copyright 2005 Sun Microsystems, Inc.  All rights reserved.
+\ Use is subject to license terms.
+\
+\ CDDL HEADER START
+\
+\ The contents of this file are subject to the terms of the
+\ Common Development and Distribution License, Version 1.0 only
+\ (the "License").  You may not use this file except in compliance
+\ with the License.
+\
+\ You can obtain a copy of the license at usr/src/OPENSOLARIS.LICENSE
+\ or http://www.opensolaris.org/os/licensing.
+\ See the License for the specific language governing permissions
+\ and limitations under the License.
+\
+\ When distributing Covered Code, include this CDDL HEADER in each
+\ file and include the License file at usr/src/OPENSOLARIS.LICENSE.
+\ If applicable, add the following below this CDDL HEADER, with the
+\ fields enclosed by brackets "[]" replaced with your own identifying
+\ information: Portions Copyright [yyyy] [name of copyright owner]
+\
+\ CDDL HEADER END
+\
+\ #pragma ident	"%Z%%M%	%I%	%E% SMI"
+
+\ start dbp section
+
+20 constant max#defer-bp
+0 value #defer-bp
+d# 80 value /defer-bp           \ up to 80 chars for each defer bp symbol
+max#defer-bp /defer-bp * buffer: >defer-bp-sym
+max#defer-bp /n* buffer: >defer-bp-len
+max#defer-bp /n* buffer: >defer-bp-off
+max#defer-bp /n* buffer: >defer-bp-adr
+
+: 'dbp-len ( index -- adr ) >defer-bp-len swap na+ ;
+: 'dbp-off ( index -- adr ) >defer-bp-off swap na+ ;
+: 'dbp-adr ( index -- adr ) >defer-bp-adr swap na+ ;
+: 'dbp-sym ( index -- adr ) /defer-bp * >defer-bp-sym + ;
+
+: dbp-len@ ( index -- len ) 'dbp-len @ ;
+: dbp-off@ ( index -- off ) 'dbp-off @ ;
+: dbp-adr@ ( index -- adr ) 'dbp-adr @ ;
+
+: dbp-len! ( val index -- ) 'dbp-len ! ;
+: dbp-off! ( val index -- ) 'dbp-off ! ;
+: dbp-adr! ( val index -- ) 'dbp-adr ! ;
+
+: fill0 ( adr len -- ) dup if bounds do 0 i c! loop then ;
+
+: defer-sym>buf ( sym$ -- )
+   tuck #defer-bp 'dbp-sym      ( len sym$ buf-addr )
+   dup >r swap move r>          ( len buf-addr )
+   over + swap /defer-bp swap - ( buf-addr+len 80-len )
+   fill0
+;
+
+\ overwrite "index" entry with "index+1" entry content
+: dbp-shift ( index -- )
+   dup 1+ dbp-len@ over dbp-len!  ( index )
+   dup 1+ dbp-off@ over dbp-off!  ( index )
+   dup 1+ dbp-adr@ over dbp-adr!  ( index )
+   'dbp-sym dup /defer-bp +  ( dst-adr src-adr )
+   swap /defer-bp move
+;
+
+\ try to add break point if the symbol is already there
+: dbp-+bp? ( off sym$ -- off sym$ adr+off|0 )
+   2dup 2>r                     ( off sym$ ) ( R: sym$ )
+   $handle-literal?             ( off adr true | off false )
+   if                           ( off adr )
+      over + dup +bp            ( off adr+off )
+   else                         ( off )
+      0                         ( off 0 )
+   then
+   2r> rot                      ( off sym$ adr+off ) ( R: )
+;
+
+: +dbp ( off sym$ -- )
+   #defer-bp max#defer-bp >= if
+      ." too many defer break points" cr
+      2drop drop exit
+   then
+
+   dup /defer-bp > if                     ( off sym$ )
+      ." symbol too long" cr
+      2drop drop exit
+   then
+
+   \ add breakpoint for resolvable symbols
+   dbp-+bp? #defer-bp dbp-adr!            ( off sym$ )
+   rot      #defer-bp dbp-off!            ( sym$ )
+
+   \ copy symbol to buffer
+   tuck defer-sym>buf                     ( len )
+   #defer-bp dbp-len!                     ( )
+
+   \ adjust array index
+   #defer-bp 1+ to #defer-bp              ( off sym$ )
+;
+
+: .dbp ( -- )
+   #defer-bp dup .d ." defer break points" cr
+   ."  "#  address  off len symbol" cr
+   0 ?do
+      i 2 .r ."  "
+      i dbp-adr@ 8 u.r ."  "
+      i dbp-off@ 4  .r ."  "
+      i dbp-len@ dup 3 .r ."  "           ( len )
+      i 'dbp-sym swap type cr
+   loop
+;
+
+: dbp-scrub-last ( -- )
+   #defer-bp 0> if
+      #defer-bp 1- dup to #defer-bp       ( #defer-bp-1 )
+      'dbp-sym /defer-bp fill0
+      0 #defer-bp dbp-len!
+      0 #defer-bp dbp-off!
+      0 #defer-bp dbp-adr!
+   then
+;
+
+: --dbp ( -- )
+   #defer-bp 0> if
+      #defer-bp 1- dbp-adr@ -bp
+      dbp-scrub-last
+   then
+;
+
+: -dbp  ( index -- )
+   dup #defer-bp >= if                    ( index )
+      ." bad break point index " . exit
+   then                                   ( index )
+   dup dbp-adr@ -bp                       ( index )
+   #defer-bp 1- swap ?do                  ( #defer-bp-1 index )
+      i dbp-shift
+   loop
+   dbp-scrub-last
+;
+
+: valid-sym?  ( index -- adr true | false )
+   dup 'dbp-sym swap dbp-len@ sym>value
+   if true else 2drop false then
+;
+
+: dbp-enable  ( bp-virt index -- ) over swap dbp-adr! +bp ;
+: dbp-disable ( index -- ) dup dbp-adr@ -bp 0 swap dbp-adr! ;
+
+: dbp-refresh ( -- )
+   #defer-bp 0 ?do
+      i valid-sym? if        ( adr )
+         i dbp-adr@ if drop  ( )
+         else                ( adr )      \ found newly resolved symbol
+            i dbp-off@ +     ( adr+off )
+            dup reloc? if    ( adr+off )  \ has the module been relocated?
+               i dbp-enable  ( )          \ set new break point
+            else             ( adr+off )
+               drop          ( )
+            then             ( )
+         then                ( )
+      else                   ( )
+         i dbp-adr@ if       ( )          \ old symbol now becomes invalid
+            i dbp-disable    ( )          \ clear break point
+         then
+      then
+   loop
+;
+
+\ frontend interface for +dbp
+: dbp   \ symbol+off   ( -- )
+   parse-word			( symbol+off$ )
+   ascii + left-parse-string	( off$ symbol$ )
+   2swap $number if 0 then	( symbol$ off|0 )
+   dup 3 and 0<> if		( symbol$ off|0 )
+      ." warning: offset not aligned" cr
+   then
+   -rot +dbp			( )
+;
+
+\ resolves potential new breakpoints from the new module or deletes
+\ breakpoints from theunloaded module and returns.
+: dbp-kobj-hook ( -- ) dbp-refresh go ;
+
+\ : dbp-install ( -- )
+\    ['] noop 0 ['] ' 0    ['] +bpx (patch)
+\    symbol fdbp_hook ['] dbp-kobj-hook +bpx	\ +bpx ( bp-adr bp-action -- )
+\    \ test obp cpu sync kernel return fix
+\    \ symbol kobj_notify_load ['] dbp-kobj-hook +bpx
+\    ['] ' 0    ['] noop 0 ['] +bpx (patch)
+\ ;
+
+\ fdbp_hook: a kernel null function called upon each module load/unload.
+: dbp-install " symbol fdbp_hook +bpx dbp-kobj-hook" eval ;
+
+: dbp?	( -- )
+   ." dbp?			- help, display defer break point words"    cr
+   ." dbp pci_attach+4	- add defer break point at pci_attach + 4"  cr
+   ." dbp pcisch:pci_attach+4	- same as above, except from pcisch module" cr
+   ." .dbp			- display all requested defer break points" cr
+   ." 3 -dbp			- remove defer break point #3 (from .dbp)"  cr
+   ." --dbp			- remove the very last defer break point"   cr
+;
+
+\ end dbp section
+
+
+: .dev_t ( dev -- ) dup nbitsminor >> .d maxmin and .d ;
+
+: .phys ( pa -- ) dup .x  d >>  ." pfn:"  .x ;
+
+
+vocabulary list-words
+h# 20 constant list-sz
+20 ' list-words c-struct .list
+also list-words definitions
+
+' .x 10 struct-field list_head
+' .x 8 ext-field list_offset
+' .x 0 ext-field list_size
+
+kdbg-words definitions
+previous
+
+\ end list section
+
+
+vocabulary list_node-words
+h# 10 constant list_node-sz
+10 ' list_node-words c-struct .list_node
+also list_node-words definitions
+
+' .x 8 ptr-field list_prev
+' .x 0 ptr-field list_next
+
+kdbg-words definitions
+previous
+
+\ end list_node section
+
+
+vocabulary adaptive_mutex-words
+h# 8 constant adaptive_mutex-sz
+8 ' adaptive_mutex-words c-struct .adaptive_mutex
+also adaptive_mutex-words definitions
+
+' .x 0 ext-field _m_owner
+
+kdbg-words definitions
+previous
+
+\ end adaptive_mutex section
+
+
+vocabulary spin_mutex-words
+h# 8 constant spin_mutex-sz
+8 ' spin_mutex-words c-struct .spin_mutex
+also spin_mutex-words definitions
+
+' .x 7 byte-field m_dummylock
+' .x 6 byte-field m_spinlock
+' .x 4 short-field m_filler
+' .x 2 short-field m_minspl
+' .x 0 short-field m_oldspl
+
+kdbg-words definitions
+previous
+
+\ end spin_mutex section
+
+
+vocabulary rwlock_impl-words
+h# 8 constant rwlock_impl-sz
+8 ' rwlock_impl-words c-struct .rwlock_impl
+also rwlock_impl-words definitions
+
+' .x 0 ext-field rw_wwwh
+
+kdbg-words definitions
+previous
+
+\ end rwlock_impl section
+
+
+alias .mutex .adaptive_mutex
+alias .rwlock .rwlock_impl
+
+
+vocabulary avl_tree-words
+h# 28 constant avl_tree-sz
+28 ' avl_tree-words c-struct .avl_tree
+also avl_tree-words definitions
+
+' .x 20 ext-field avl_size
+' .d 18 ext-field avl_numnodes
+' .x 10 ext-field avl_offset
+' .x 8 ptr-field avl_compar
+' .x 0 ptr-field avl_root
+
+kdbg-words definitions
+previous
+
+\ end avl_tree section
+
+
+vocabulary avl_node-words
+h# 18 constant avl_node-sz
+18 ' avl_node-words c-struct .avl_node
+also avl_node-words definitions
+
+' .x 10 ext-field avl_pcb
+' x@ ' .x 10 8 0 array-field avl_child
+
+kdbg-words definitions
+previous
+
+\ end avl_node section
+
+
+vocabulary as_callback-words
+h# 30 constant as_callback-sz
+30 ' as_callback-words c-struct .as_callback
+also as_callback-words definitions
+
+' .x 28 ext-field ascb_len
+' .x 20 ptr-field ascb_saddr
+' .x 18 ptr-field ascb_arg
+' .x 10 ptr-field ascb_func
+' .x 8 long-field ascb_events
+' .x 0 ptr-field ascb_next
+
+kdbg-words definitions
+previous
+
+\ end as_callback section
+
+
+vocabulary as-words
+h# e8 constant as-sz
+e8 ' as-words c-struct .as
+also as-words definitions
+
+' .x d0 ptr-field a_xhat
+' .x c8 ptr-field a_callbacks
+' .avl_tree 50 struct-field a_segtree
+' .x 40 ptr-field a_lastgap
+' .x 38 ext-field a_size
+' .rwlock 30 struct-field a_lock
+' .x 28 ptr-field a_seglast
+' .x 20 ptr-field a_userlimit
+' .x 10 ptr-field a_hat
+' .x a struct-field a_cv
+' .x 9 byte-field a_vbits
+' .mutex 0 struct-field a_contents
+
+kdbg-words definitions
+previous
+
+\ end as section
+
+
+vocabulary seg-words
+h# 60 constant seg-sz
+60 ' seg-words c-struct .seg
+also seg-words definitions
+
+' .x 40 ptr-field s_data
+' .addr>sym 38 ptr-field s_ops
+' .avl_node 20 struct-field s_tree
+' .x 18 ptr-field s_as
+' .d 10 long-field s_szc
+' .x 8 ext-field s_size
+' .x 0 ptr-field s_base
+
+kdbg-words definitions
+previous
+
+\ end seg section
+
+
+vocabulary page-words
+h# 80 constant page-sz
+80 ' page-words c-struct .page
+also page-words definitions
+
+' .x 78 struct-field p_ilock
+' .x 70 ptr-field p_kpmelist
+' .x 6c long-field p_kpmref
+' .x 68 long-field p_slckcnt
+' .x 64 long-field p_sharepad
+' .x 60 long-field p_share
+' .x 58 ext-field p_pagenum
+' .x 50 ptr-field p_mapping
+' .x 4f byte-field p_toxic
+' .x 4e byte-field p_index
+' .x 4d byte-field p_vcolor
+' .x 4c byte-field p_nrm
+' .x 4b byte-field p_state
+' .x 4a byte-field p_fsdata
+' .x 49 byte-field p_szc
+' .x 48 byte-field p_iolock_state
+' .x 46 struct-field p_io_cv
+' .x 44 struct-field p_cv
+' .x 42 short-field p_cowcnt
+' .x 40 short-field p_lckcnt
+' .x 38 ptr-field p_prev
+' .x 30 ptr-field p_next
+' .x 28 ptr-field p_vpprev
+' .x 20 ptr-field p_vpnext
+' .x 18 ptr-field p_hash
+' .x 14 long-field p_vpmref
+' .x 10 long-field p_selock
+' .x 8 ptr-field p_vnode
+' .x 0 ext-field p_offset
+
+kdbg-words definitions
+previous
+
+\ end page section
+
+
+vocabulary memlist-words
+h# 20 constant memlist-sz
+20 ' memlist-words c-struct .memlist
+also memlist-words definitions
+
+' .x 10 ptr-field ml_next
+' .phys 8 ext-field ml_size
+' .phys 0 ext-field ml_address
+
+kdbg-words definitions
+previous
+
+\ end memlist section
+
+
+vocabulary segvn_data-words
+h# a8 constant segvn_data-sz
+a8 ' segvn_data-words c-struct .segvn_data
+also segvn_data-words definitions
+
+' .x a0 ext-field softlockcnt_send
+' .x 98 ext-field softlockcnt_sbase
+' .x 94 byte-field pageswap
+' .x 90 long-field tr_state
+' .x 88 ptr-field svn_trprev
+' .x 80 ptr-field svn_trnext
+' .x 78 ptr-field seg
+' .x 70 struct-field tr_policy_info
+' .x 68 ptr-field rcookie
+' .x 60 struct-field policy_info
+' .x 58 ext-field softlockcnt
+' .x 52 short-field flags
+' .x 51 byte-field pageadvice
+' .x 50 byte-field advice
+' .x 48 ext-field swresv
+' .x 40 ptr-field cred
+' .x 38 ptr-field vpage
+' .x 30 ptr-field amp
+' .x 28 ext-field anon_index
+' .x 20 ptr-field vp
+' .x 18 ext-field offset
+' .x 13 byte-field type
+' .x 12 byte-field maxprot
+' .x 11 byte-field prot
+' .x 10 byte-field pageprot
+' .x 8 struct-field segfree_syncmtx
+' .x 0 struct-field lock
+
+kdbg-words definitions
+previous
+
+\ end segvn_data section
+
+
+vocabulary segvn_crargs-words
+h# 30 constant segvn_crargs-sz
+30 ' segvn_crargs-words c-struct .segvn_crargs
+also segvn_crargs-words definitions
+
+' .x 2c long-field lgrp_mem_policy_flags
+' .x 28 long-field szc
+' .x 20 ptr-field amp
+' .x 1c long-field flags
+' .x 1a byte-field maxprot
+' .x 19 byte-field prot
+' .x 18 byte-field type
+' .x 10 ext-field offset
+' .x 8 ptr-field cred
+' .x 0 ptr-field vp
+
+kdbg-words definitions
+previous
+
+\ end segvn_crargs section
+
+
+vocabulary anon-words
+h# 30 constant anon-sz
+30 ' anon-words c-struct .anon
+also anon-words definitions
+
+' .x 28 long-field an_refcnt
+' .x 20 ptr-field an_hash
+' .x 18 ext-field an_poff
+' .x 10 ext-field an_off
+' .x 8 ptr-field an_pvp
+' .x 0 ptr-field an_vp
+
+kdbg-words definitions
+previous
+
+\ end anon section
+
+
+vocabulary anon_hdr-words
+h# 20 constant anon_hdr-sz
+20 ' anon_hdr-words c-struct .anon_hdr
+also anon_hdr-words definitions
+
+' .x 18 long-field flags
+' .x 10 ptr-field array_chunk
+' .x 8 ext-field size
+' .x 0 struct-field serial_lock
+
+kdbg-words definitions
+previous
+
+\ end anon_hdr section
+
+
+vocabulary anon_map-words
+h# 70 constant anon_map-sz
+70 ' anon_map-words c-struct .anon_map
+also anon_map-words definitions
+
+' .x 60 struct-field a_phead
+' .x 58 struct-field a_pmtx
+' .x 50 ext-field a_softlockcnt
+' .x 48 struct-field a_purgemtx
+' .x 44 struct-field a_purgecv
+' .x 40 long-field a_purgewait
+' .x 38 ptr-field a_sp
+' .x 30 ptr-field locality
+' .x 28 short-field a_szc
+' .x 20 ext-field refcnt
+' .x 18 ext-field swresv
+' .x 10 ptr-field ahp
+' .x 8 ext-field size
+' .x 0 struct-field a_rwlock
+
+kdbg-words definitions
+previous
+
+\ end anon_map section
+
+
+: .seg-visit ( seg -- ) recursive
+   [ also seg-words ]
+   [ also avl_node-words ]
+
+   dup s_tree avl_child p@		( seg leftnode )
+   ?dup if
+      0 s_tree -			( seg seg' )
+      .seg-visit			( seg )
+   then
+
+   dup .seg cr				( seg )
+
+   s_tree avl_child ptrsize + p@	( rightnode )
+   ?dup if
+      0 s_tree -			( seg' )
+      .seg-visit
+   then
+   [ previous ]
+   [ previous ]
+;
+
+
+
+: .seg-list ( seg -- ) recursive
+   [ also seg-words ]
+   [ also avl_node-words ]
+   dup .seg cr				( seg )
+
+   dup s_tree avl_child ptrsize + p@	( seg rightnode )
+   ?dup if
+      0 s_tree -			( seg seg' )
+      .seg-visit
+   then
+
+   s_tree avl_pcb dup			( avl_pcb avl_pcb)
+   4 and 0= if
+      7 not and				( parentnode )
+      ?dup if
+         0 s_tree - .seg-list		( parentseg )
+      then
+   else
+      drop
+   then
+   [ previous ]
+   [ previous ]
+;
+
+
+
+: .seg-addr ( as addr -- )
+   [ also as-words ]
+   [ also seg-words ]
+   [ also avl_tree-words ]
+   [ also avl_node-words ]
+   swap a_segtree dup avl_offset negate swap avl_root  ( addr offset root )
+
+   begin ?dup while				( addr off node )
+      3dup +					( addr off node addr seg )
+      dup s_base swap s_size			( addr off node addr base size )
+      over +					( addr off node addr base end )
+      within  if				( addr off node )
+         + .seg drop exit			( )
+      then					( addr off node )
+
+      3dup + s_base				( addr off node addr base )
+      < if					( addr off node )
+      avl_child p@				( addr off leftnode )
+      else
+      avl_child ptrsize + p@			( addr off rightnode)
+      then					
+
+   repeat					( addr off node )
+   drop						( addr )
+   . ." not found"                              ( )
+   [ previous ]
+   [ previous ]
+   [ previous ]
+   [ previous ]
+;
+
+
+vocabulary _label_t-words
+h# 10 constant _label_t-sz
+10 ' _label_t-words c-struct ._label_t
+also _label_t-words definitions
+
+' x@ ' .x 10 8 0 array-field val
+
+kdbg-words definitions
+previous
+
+\ end _label_t section
+
+
+vocabulary timeval-words
+h# 10 constant timeval-sz
+10 ' timeval-words c-struct .timeval
+also timeval-words definitions
+
+' .x 8 ext-field tv_usec
+' .x 0 ext-field tv_sec
+
+kdbg-words definitions
+previous
+
+\ end timeval section
+
+
+vocabulary itimerval-words
+h# 20 constant itimerval-sz
+20 ' itimerval-words c-struct .itimerval
+also itimerval-words definitions
+
+' .timeval 10 struct-field it_value
+' .timeval 0 struct-field it_interval
+
+kdbg-words definitions
+previous
+
+\ end itimerval section
+
+
+vocabulary k_sigset_t-words
+h# c constant k_sigset_t-sz
+c ' k_sigset_t-words c-struct .k_sigset_t
+also k_sigset_t-words definitions
+
+' l@ ' .x c 4 0 array-field __sigbits
+
+kdbg-words definitions
+previous
+
+\ end k_sigset_t section
+
+
+vocabulary k_siginfo-words
+h# 38 constant k_siginfo-sz
+38 ' k_siginfo-words c-struct .k_siginfo
+also k_siginfo-words definitions
+
+' .d 8 long-field si_errno
+' .x 4 long-field si_code
+' .x 0 long-field si_signo
+
+kdbg-words definitions
+previous
+
+\ end k_siginfo section
+
+
+vocabulary lwpchan_t-words
+h# 10 constant lwpchan_t-sz
+10 ' lwpchan_t-words c-struct .lwpchan_t
+also lwpchan_t-words definitions
+
+' .x 8 ptr-field lc_wchan
+' .x 0 ptr-field lc_wchan0
+
+kdbg-words definitions
+previous
+
+\ end lwpchan_t section
+
+
+vocabulary _kthread-words
+h# 358 constant _kthread-sz
+358 ' _kthread-words c-struct ._kthread
+also _kthread-words definitions
+
+' .x 2b0 ptr-field t_lgrp_affinity
+' .x 2a0 ptr-field t_sleepq
+' .x 298 ptr-field t_priback
+' .x 290 ptr-field t_priforw
+' .x 210 ptr-field t_ts
+' .x 208 ptr-field t_prioinv
+' .x 200 ptr-field t_rprof
+' .d 1f8 long-field t_mstate
+' .x 1f0 ext-field t_waitrq
+' .x 1ec struct-field _tu
+' .d 1e8 long-field t_kpri_req
+' .d 1e0 ext-field t_disp_time
+' .x 1d2 byte-field t_pre_sys
+' .x 1d0 short-field t_oldspl
+' .x 1c8 ptr-field t_lockp
+' .x 1be struct-field t_delay_cv
+' .d 1bc short-field t_sysnum
+' .x 1b8 long-field t_pctcpu
+' .x 1a8 ext-field t_lbolt
+' .x 198 ptr-field t_cred
+' .x 188 ptr-field t_pollstate
+' .d 182 short-field t_whatstop
+' .d 180 short-field t_whystop
+' .x 178 ptr-field t_prev
+' .x 170 ptr-field t_next
+' .x 160 ptr-field t_procp
+' .x 158 ptr-field t_lwp
+' .x 148 ptr-field t_back
+' .x 140 ptr-field t_forw
+' .k_sigset_t 128 struct-field t_hold
+' .k_sigset_t 110 struct-field t_sig
+' .x 108 ptr-field t_sigqueue
+' .d 100 long-field t_tid
+' .d e0 ext-field t_did
+' .x d0 ptr-field t_intr
+' .x a8 ptr-field t_cpu
+' .d a2 byte-field t_pil
+' .x a0 byte-field t_lock
+' .x 98 ptr-field t_swap
+' .x 90 ptr-field t_ontrap
+' .x 88 ptr-field t_onfault
+' .x 80 ext-field t_lofault
+' .x 78 ptr-field t_ctx
+' .x 70 ptr-field t_cldata
+' .x 68 ptr-field t_clfuncs
+' .x 60 long-field t_cid
+' .addr>sym 58 ptr-field t_sobj_ops
+' .lwpchan_t 48 struct-field t_lwpchan
+' ._label_t 38 struct-field t_pcb
+' .d 32 short-field t_epri
+' .d 30 short-field t_pri
+' .x 2c long-field t_state
+' .d 2a byte-field t_preempt
+' .x 28 short-field t_schedflag
+' .x 26 short-field t_proc_flag
+' .x 24 short-field t_flag
+' .d 22 short-field t_bind_cpu
+' .d 20 short-field t_affinitycnt
+' .x 18 ptr-field t_bound_cpu
+' .x 8 ptr-field t_stk
+' .x 0 ptr-field t_link
+
+kdbg-words definitions
+previous
+
+\ end _kthread section
+
+
+vocabulary mstate-words
+h# 70 constant mstate-sz
+70 ' mstate-words c-struct .mstate
+also mstate-words definitions
+
+' .x 18 ext-field ms_state_start
+' .x 10 ext-field ms_term
+' .x 8 ext-field ms_start
+' .x 0 long-field ms_prev
+
+kdbg-words definitions
+previous
+
+\ end mstate section
+
+
+vocabulary _klwp-words
+h# 3a8 constant _klwp-sz
+3a8 ' _klwp-words c-struct ._klwp
+also _klwp-words definitions
+
+' .x 360 ptr-field lwp_procp
+' .x 358 ptr-field lwp_thread
+' .x 352 short-field lwp_nostop
+' .x 351 byte-field lwp_state
+' .x 2e8 ptr-field lwp_lastfaddr
+' .d 2e0 long-field lwp_lastfault
+' .mstate 210 struct-field lwp_mstate
+' .x 208 long-field lwp_oweupc
+' .k_sigset_t 178 struct-field lwp_sigoldmask
+' .x 138 ptr-field lwp_curinfo
+' .x 11b byte-field lwp_asleep
+' .x 11a byte-field lwp_sysabort
+' .x 119 byte-field lwp_curflt
+' .x 118 byte-field lwp_cursig
+' ._label_t 108 struct-field lwp_qsav
+' .x 100 ptr-field lwp_fpu
+' .x f8 ptr-field lwp_regs
+' x@ ' .x 40 8 b8 array-field lwp_arg
+' .x b5 byte-field lwp_eosys
+' .x b4 byte-field lwp_error
+' .d b0 long-field lwp_errno
+' .x a8 ptr-field lwp_ap
+' .x a0 ext-field lwp_oldcontext
+
+kdbg-words definitions
+previous
+
+\ end _klwp section
+
+
+vocabulary timespec-words
+h# 10 constant timespec-sz
+10 ' timespec-words c-struct .timespec
+also timespec-words definitions
+
+' .x 8 ext-field tv_nsec
+' .x 0 ext-field tv_sec
+
+kdbg-words definitions
+previous
+
+\ end timespec section
+
+
+alias .timestruc .timespec
+
+
+vocabulary user-words
+h# 8a8 constant user-sz
+8a8 ' user-words c-struct .user
+also user-words definitions
+
+' x@ ' .x 240 8 5d0 array-field u_signal
+' .x 1ed byte-field u_systrap
+' .x 1ec byte-field u_acflag
+' .x 1e8 long-field u_cmask
+' .x 1d8 ext-field u_mem
+' .x 1d0 ptr-field u_rdir
+' .x 1c8 ptr-field u_cdir
+' .x 1c0 ext-field u_envp
+' .x 1b8 ext-field u_argv
+' .d 1b4 long-field u_argc
+' c@ ' .x 50 1 161 array-field u_psargs
+' c@ ' .x 11 1 150 array-field u_comm
+' .x 148 ext-field u_ticks
+' .timestruc 138 struct-field u_start
+' noop ' .x 130 10 8 array-field u_auxv
+' .x 0 ptr-field u_execsw
+
+kdbg-words definitions
+previous
+
+\ end user section
+
+
+vocabulary proc-words
+h# ee0 constant proc-sz
+ee0 ' proc-words c-struct .proc
+also proc-words definitions
+
+' .x 638 struct-field p_user
+' .x 5f8 ptr-field p_zone
+' .list_node 5a8 struct-field p_ct_member
+' .x 5a0 ptr-field p_ct_process
+' .x 598 ptr-field p_ct_equeue
+' .avl_tree 570 struct-field p_ct_held
+' .x 4c0 long-field p_model
+' .x 4b0 ptr-field p_usrstack
+' .d 278 long-field p_stkpageszc
+' .x 270 ext-field p_stksize
+' .x 268 struct-field p_srwchan_cv
+' .x 260 ptr-field p_rlink
+' .x 1e8 ptr-field p_plist
+' .x 1e0 ptr-field p_trace
+' .k_sigset_t 1d0 struct-field p_sigmask
+' .x 188 ptr-field p_tlist
+' .d 184 long-field p_zombcnt
+' .d 174 long-field p_lwprcnt
+' .d 170 long-field p_lwpcnt
+' .d 168 byte-field p_stopsig
+' .x 150 ptr-field p_sigqueue
+' .k_sigset_t 140 struct-field p_siginfo
+' .k_sigset_t 134 struct-field p_ignore
+' .k_sigset_t 11c struct-field p_sig
+' .d 118 long-field p_brkpageszc
+' .x 110 ext-field p_brksize
+' .x 108 ptr-field p_brkbase
+' .x 100 ptr-field p_bssbase
+' .x f8 ptr-field p_semacct
+' .x f0 ptr-field p_segacct
+' .x e8 ext-field p_cstime
+' .x e0 ext-field p_cutime
+' .x d8 ext-field p_stime
+' .x d0 ext-field p_utime
+' .x cc long-field p_flag
+' .x c8 long-field p_proc_flag
+' .x c6 struct-field p_holdlwps
+' .x c4 struct-field p_lwpexit
+' .x c2 struct-field p_flag_cv
+' .x c0 struct-field p_cv
+' .x b8 ptr-field p_pgidp
+' .x b0 ptr-field p_pidp
+' .x a8 ptr-field p_sessp
+' .x 98 ptr-field p_pglink
+' .x 90 ptr-field p_nextorph
+' .x 88 ptr-field p_orphan
+' .x 80 ptr-field p_nextofkin
+' .x 78 ptr-field p_prev
+' .x 70 ptr-field p_next
+' .x 68 ptr-field p_child_ns
+' .x 60 ptr-field p_sibling_ns
+' .x 58 ptr-field p_psibling
+' .x 50 ptr-field p_sibling
+' .x 48 ptr-field p_child
+' .x 40 ptr-field p_parent
+' .x 38 ptr-field p_link
+' .d 34 long-field p_ppid
+' .d 2c byte-field p_stat
+' .d 28 long-field p_swapcnt
+' .x 20 ptr-field p_cred
+' .mutex 18 struct-field p_crlock
+' .x 8 ptr-field p_as
+' .x 0 ptr-field p_exec
+
+kdbg-words definitions
+previous
+
+\ end proc section
+
+
+vocabulary pid-words
+h# 28 constant pid-sz
+28 ' pid-words c-struct .pid
+also pid-words definitions
+
+' .x 20 long-field pid_ref
+' .x 18 ptr-field pid_link
+' .x 8 ptr-field pid_pglink
+' .d 4 long-field pid_id
+' .x 0 ffffff 0 bits-field pid_prslot
+' .x 1e 40000000 0 bits-field pid_pgorphaned
+' .x 1f 80000000 0 bits-field pid_prinactive
+
+kdbg-words definitions
+previous
+
+\ end pid section
+
+
+alias .thread ._kthread
+alias .lwp ._klwp
+
+: l0x ( sp -- sp l0 ) dup v9bias + d# 0 + x@ ;
+: l1x ( sp -- sp l1 ) dup v9bias + d# 8 + x@ ;
+: l2x ( sp -- sp l2 ) dup v9bias + d# 16 + x@ ;
+: l3x ( sp -- sp l3 ) dup v9bias + d# 24 + x@ ;
+: l4x ( sp -- sp l4 ) dup v9bias + d# 32 + x@ ;
+: l5x ( sp -- sp l5 ) dup v9bias + d# 40 + x@ ;
+: l6x ( sp -- sp l6 ) dup v9bias + d# 48 + x@ ;
+: l7x ( sp -- sp l7 ) dup v9bias + d# 56 + x@ ;
+: i0x ( sp -- sp i0 ) dup v9bias + d# 64 + x@ ;
+: i1x ( sp -- sp i1 ) dup v9bias + d# 72 + x@ ;
+: i2x ( sp -- sp i2 ) dup v9bias + d# 80 + x@ ;
+: i3x ( sp -- sp i3 ) dup v9bias + d# 88 + x@ ;
+: i4x ( sp -- sp i4 ) dup v9bias + d# 96 + x@ ;
+: i5x ( sp -- sp i5 ) dup v9bias + d# 104 + x@ ;
+: i6x ( sp -- sp i6 ) dup v9bias + d# 112 + x@ ;
+: i7x ( sp -- sp i7 ) dup v9bias + d# 120 + x@ ;
+
+: l0 ( sp -- sp l0 ) dup d# 0 + l@ ;
+: l1 ( sp -- sp l1 ) dup d# 4 + l@ ;
+: l2 ( sp -- sp l2 ) dup d# 8 + l@ ;
+: l3 ( sp -- sp l3 ) dup d# 12 + l@ ;
+: l4 ( sp -- sp l4 ) dup d# 16 + l@ ;
+: l5 ( sp -- sp l5 ) dup d# 20 + l@ ;
+: l6 ( sp -- sp l6 ) dup d# 24 + l@ ;
+: l7 ( sp -- sp l7 ) dup d# 28 + l@ ;
+: i0 ( sp -- sp i0 ) dup d# 32 + l@ ;
+: i1 ( sp -- sp i1 ) dup d# 36 + l@ ;
+: i2 ( sp -- sp i2 ) dup d# 40 + l@ ;
+: i3 ( sp -- sp i3 ) dup d# 44 + l@ ;
+: i4 ( sp -- sp i4 ) dup d# 48 + l@ ;
+: i5 ( sp -- sp i5 ) dup d# 52 + l@ ;
+: i6 ( sp -- sp i6 ) dup d# 56 + l@ ;
+: i7 ( sp -- sp i7 ) dup d# 60 + l@ ;
+
+: client-pointer-bad?		( addr -- flag )
+   dup 1 and if			( addr )
+      v9bias + dup 7 and 0<>	( addr' non-aligned-flag )
+   else				( addr )
+      n->l dup 3 and 0<>	( addr' non-aligned-flag )
+   then				( addr' non-aligned-flag )
+   if				( addr' )
+      drop true exit		( not-good-flag )
+   then				( addr' )
+   dup f000.0000 ffff.ffff between if	( addr' )
+      drop true		( not-good-flag )
+   else				( addr' )
+      0 unix-tte if
+				( tte )
+         drop false		( good-flag )
+      else
+				( )
+         true			( not-good-flag) 
+      then			( flag )
+   then				( flag )
+;
+
+: .stacktrace ( sp -- )
+   begin  dup client-pointer-bad?
+      0= over and  while
+      dup 1 and  if
+         i7x dup client-pointer-bad? 0<>
+	 if drop ." XXXXXXXX " else
+	 dup 1 and if v9bias + then .subroutine
+	 then
+	 ." from " i7x .subname cr
+         ."  ( " i0x .h i1x .h i2x .h i3x .h i4x .h i5x .h ." )" cr
+         i6x
+      else
+         i7 dup client-pointer-bad? 0<> if drop ." XXXXXXXX " else
+	 .subroutine then ."  from " i7 .subname cr
+         ."  ( " i0 .h i1 .h i2 .h i3 .h i4 .h i5 .h ." )" cr
+         i6
+      then
+      exit? throw nip
+   repeat
+   drop
+;
+
+: .threadtrace ( t -- )
+   [ also _kthread-words ]
+   [ also _label_t-words ]
+   t_pcb                              ( pcb )
+   ."  pc: " dup 0 ['] val index .x   ( pcb )
+   ."  sp: " 1 ['] val index dup .x   ( sp )
+   cr .stacktrace cr                  ( )
+   [ previous ]
+   [ previous ]
+;
+
+: .proctlist ( p -- )
+   [ also proc-words ]
+   [ also _kthread-words ]
+   p_tlist dup                     ( t0 t0 )
+   begin                           ( t0 t )
+      ."    thread " dup .x        ( t0 t )
+      dup t_forw swap              ( t0 t' t )
+      .threadtrace                 ( t0 t' )
+   2dup =  until                   ( t0 t )
+   2drop                           ( )
+   [ previous ]
+   [ previous ]
+;
+
+: .threadstate ( t -- )
+   [ also _kthread-words ]
+   t_state dup 10 u<= if
+      " FSR?O???Z???????T" drop + c@ emit
+   else
+      drop ." ?" 
+   then
+   [ previous ]
+;
+
+d# 80 constant PSARGSZ
+
+: .ttrace ( t -- )
+   [ also user-words ]
+   [ also proc-words ]
+   [ also _kthread-words ]
+   ?dup  if  ( t )
+      dup t_state  if                        ( t )
+         space dup t_state ." t_state: " .x  ( t )
+         dup t_procp                         ( t p )
+         dup p_pidp 4 + l@ ."  pid: " .d     ( t p )
+         dup p_ppid ."  ppid: " .d cr        ( t p )
+         space dup ." proc: " .x             ( t p )
+         space dup p_as ." as: " .x          ( t p )
+         space p_user dup ."  user: " .x cr  ( t u )
+         space ." CMD: " u_psargs PSARGSZ .nstr cr ( t )
+         .threadtrace
+      else                                   ( t )
+         ." free" cr drop
+      then
+   then
+   [ previous ]
+   [ previous ]
+   [ previous ]
+;
+
+: .tlist ( -- )
+   [ also user-words ]
+   [ also proc-words ]
+   [ also pid-words ]
+   [ also _kthread-words ]
+   d#  2 to-column ." THREAD"
+   d# 16 to-column ." S"
+   d# 18 to-column ." PID"
+   d# 26 to-column ." PPID"
+   d# 34 to-column ." COMMAND" cr
+   symbol genunix:allthreads p@ ?dup  if     ( t )
+      dup                                    ( t t )
+      begin                                  ( t0 t )
+         dup t_next swap                     ( t0 t' t )
+         dup t_state  if                     ( t0 t' t )
+            d# 2 to-column dup .x            ( t0 t' t )
+            d# 16 to-column dup .threadstate ( t0 t' t )
+            d# 18 to-column t_procp          ( t0 t' p )
+            dup p_pidp pid_id .d             ( t0 t' p )
+            d# 26 to-column dup p_ppid .d    ( t0 t' p )
+            d# 34 to-column                  ( tp t' p )
+            p_user u_psargs PSARGSZ .nstr cr ( to t' )
+         else                                ( t0 t' t )
+            drop                             ( t0 t' )
+         then                                ( t0 t' done? )
+         exit?
+      dup 2over = or nip  until              ( t0 t )
+      2drop                                  ( )
+   then                                      ( )
+   [ previous ]
+   [ previous ]
+   [ previous ]
+   [ previous ]
+;
+
+: .threadlist ( -- )
+   [ also _kthread-words ]
+   symbol genunix:allthreads p@ ?dup  if  ( t )
+      dup                                 ( t t )
+      begin                               ( t0 t )
+         ."    thread " dup .x            ( t0 t )
+         dup t_next swap                  ( t0 t' t )
+	 dup t_state  if                  ( t0 t' t )
+            .ttrace false                 ( t0 t false )
+         else                             ( t0 t' t )
+            ."  free" cr cr drop exit?    ( t0 t' done? )
+         then                             ( t0 t' done? )
+      dup 2over = or nip  until           ( t0 t )
+      2drop                               ( )
+   then                                   ( )
+   [ previous ]
+;
+
+
+vocabulary cpupart-words
+h# 148 constant cpupart-sz
+148 ' cpupart-words c-struct .cpupart
+also cpupart-words definitions
+
+' .x 138 struct-field cp_haltset
+' .x 128 struct-field cp_cmt_pgs
+' .x 120 long-field cp_lgrp_hint
+' .x 11c long-field cp_gen
+' .x 118 long-field cp_attr
+' x@ ' .x 18 8 100 array-field cp_hp_avenrun
+' .x f8 long-field cp_nlgrploads
+' .x f0 ptr-field cp_lgrploads
+' .x e8 ext-field cp_lgrpset
+' .x 80 struct-field cp_loadavg
+' .x 78 ext-field cp_nwaiting_cum
+' .x 70 ext-field cp_nrunnable_cum
+' .x 68 ext-field cp_updates
+' .x 64 long-field cp_nrunning
+' .x 60 long-field cp_nrunnable
+' .x 58 ptr-field cp_kstat
+' .x 50 ptr-field cp_cpulist
+' .x 48 ptr-field cp_prev
+' .x 40 ptr-field cp_next
+' .x 3c long-field cp_ncpus
+' .x 38 long-field cp_id
+' .x 0 struct-field cp_kp_queue
+
+kdbg-words definitions
+previous
+
+\ end cpupart section
+
+
+vocabulary cpu_stats-words
+h# 2f8 constant cpu_stats-sz
+2f8 ' cpu_stats-words c-struct .cpu_stats
+also cpu_stats-words definitions
+
+' .x 200 struct-field vm
+' .x 0 struct-field sys
+
+kdbg-words definitions
+previous
+
+\ end cpu_stats section
+
+
+vocabulary _disp-words
+h# 38 constant _disp-sz
+38 ' _disp-words c-struct ._disp
+also _disp-words definitions
+
+' .d 24 long-field disp_nrunnable
+' .d 22 short-field disp_max_unbound_pri
+' .d 20 short-field disp_maxrunpri
+' .x 18 ptr-field disp_qactmap
+' .x 10 ptr-field disp_q_limit
+' .x 8 ptr-field disp_q
+' .d 2 short-field disp_npri
+' .x 0 byte-field disp_lock
+
+kdbg-words definitions
+previous
+
+\ end _disp section
+
+
+vocabulary cpu-words
+h# fb8 constant cpu-sz
+fb8 ' cpu-words c-struct .cpu
+also cpu-words definitions
+
+' .x 610 struct-field cpu_m
+' .x 4b8 ptr-field cpu_cyclic
+' .d 10c long-field cpu_base_spl
+' .x 108 long-field cpu_intr_actv
+' .x 100 ptr-field cpu_intr_thread
+' .x f8 ptr-field cpu_intr_stack
+' .d ea short-field cpu_dispatch_pri
+' .x e8 byte-field cpu_thread_lock
+' .x e0 ptr-field cpu_dispthread
+' .x d9 byte-field cpu_kprunrun
+' .x d8 byte-field cpu_runrun
+' ._disp d0 ptr-field cpu_disp
+' .x 80 ptr-field cpu_prev_part
+' .x 78 ptr-field cpu_next_part
+' .x 70 ptr-field cpu_prev_onln
+' .x 68 ptr-field cpu_next_onln
+' .x 60 ptr-field cpu_prev
+' .x 58 ptr-field cpu_next
+' .x 50 long-field cpu_cache_offset
+' .x 48 ptr-field cpu_lpl
+' .x 40 ptr-field cpu_part
+' .x 38 ptr-field cpu_fpowner
+' .x 30 ptr-field cpu_lwp
+' .x 28 ptr-field cpu_pause_thread
+' .x 20 ptr-field cpu_idle_thread
+' .x 18 ptr-field cpu_thread
+' .x 8 short-field cpu_flags
+' .d 4 long-field cpu_seqid
+' .d 0 long-field cpu_id
+
+kdbg-words definitions
+previous
+
+\ end cpu section
+
+
+alias .disp ._disp
+
+: .cpu-n ( n -- )
+   dup ptrsize * symbol cpu + p@        ( n cpu )
+   ?dup  if                       ( n cpu )
+      .cpu drop                   ( )
+   else                           ( n )
+      ." cpu[ " .d ." ] is NULL"  ( )
+   then                           ( )
+;
+
+: .cpu-list ( -- )
+   [ also cpu-words ]
+   symbol cpu_list p@ ?dup  if   ( cpu0 )
+      dup                        ( cpu0 cpu0 )
+      begin                      ( cpu0 cpu )
+         dup .cpu cpu_next cr    ( cpu0 cpu' )
+      2dup =  until              ( cpu0 cpu )
+      2drop                      ( )
+   then                          ( )
+   [ previous ]
+;
+
+
+vocabulary pm_scan-words
+h# 10 constant pm_scan-sz
+10 ' pm_scan-words c-struct .pm_scan
+also pm_scan-words definitions
+
+' .x 8 ptr-field ps_scan_id
+' .x 4 long-field ps_scan_flags
+' .x 0 long-field ps_idle_down
+
+kdbg-words definitions
+previous
+
+\ end pm_scan section
+
+
+vocabulary pm_comp-words
+h# 40 constant pm_comp-sz
+40 ' pm_comp-words c-struct .pm_comp
+also pm_comp-words definitions
+
+' .x 38 ext-field pmc_lnames_sz
+' .x 30 ptr-field pmc_lname_buf
+' .x 28 ext-field pmc_name_sz
+' .x 20 ptr-field pmc_lnames
+' .x 18 ptr-field pmc_thresh
+' .x 10 ptr-field pmc_lvals
+' .x 8 long-field pmc_numlevels
+' .x 0 ptr-field pmc_name
+
+kdbg-words definitions
+previous
+
+\ end pm_comp section
+
+
+vocabulary pm_component-words
+h# 60 constant pm_component-sz
+60 ' pm_component-words c-struct .pm_component
+also pm_component-words definitions
+
+' .x 20 struct-field pmc_comp
+' .x 18 long-field pmc_phc_pwr
+' .x 14 long-field pmc_cur_pwr
+' .x 10 long-field pmc_norm_pwr
+' .x 8 ext-field pmc_timestamp
+' .x 4 long-field pmc_busycount
+' .x 0 long-field pmc_flags
+
+kdbg-words definitions
+previous
+
+\ end pm_component section
+
+
+vocabulary pm_info-words
+h# 20 constant pm_info-sz
+20 ' pm_info-words c-struct .pm_info
+also pm_info-words definitions
+
+' .x 18 struct-field pmi_cv
+' .x 10 ptr-field pmi_lp
+' l@ ' .x 8 4 8 array-field pmi_levels
+' .x 4 long-field pmi_clone
+' .x 0 long-field pmi_dev_pm_state
+
+kdbg-words definitions
+previous
+
+\ end pm_info section
+
+
+here ," PMR_SET_POWER" 1
+here ," PMR_SUSPEND" 2
+here ," PMR_RESUME" 3
+here ," PMR_PRE_SET_POWER" 4
+here ," PMR_POST_SET_POWER" 5
+here ," PMR_PPM_SET_POWER" 6
+here ," PMR_PPM_ATTACH" 7
+here ," PMR_PPM_DETACH" 8
+here ," PMR_PPM_POWER_CHANGE_NOTIFY" 9
+here ," PMR_REPORT_PMCAP" a
+here ," PMR_CHANGED_POWER" b
+here ," PMR_PPM_PRE_PROBE" c
+here ," PMR_PPM_POST_PROBE" d
+here ," PMR_PPM_PRE_ATTACH" e
+here ," PMR_PPM_POST_ATTACH" f
+here ," PMR_PPM_PRE_DETACH" 10
+here ," PMR_PPM_POST_DETACH" 11
+here ," PMR_PPM_UNMANAGE" 12
+here ," PMR_PPM_PRE_RESUME" 13
+here ," PMR_PPM_ALL_LOWEST" 14
+here ," PMR_PPM_LOCK_POWER" 15
+here ," PMR_PPM_UNLOCK_POWER" 16
+here ," PMR_PPM_TRY_LOCK_POWER" 17
+here ," PMR_PPM_INIT_CHILD" 18
+here ," PMR_PPM_UNINIT_CHILD" 19
+here ," PMR_PPM_POWER_LOCK_OWNER" 1a
+here ," PMR_PPM_ENTER_SX" 1b
+here ," PMR_PPM_EXIT_SX" 1c
+here ," PMR_PPM_SEARCH_LIST" 1d
+1d c-enum .pm_request_type
+
+vocabulary power_req-words
+h# 28 constant power_req-sz
+28 ' power_req-words c-struct .power_req
+also power_req-words definitions
+
+' .x 8 struct-field req
+' .d 0 long-field request_type
+
+kdbg-words definitions
+previous
+
+\ end power_req section
+
+
+vocabulary pm_thresh_entry-words
+h# 10 constant pm_thresh_entry-sz
+10 ' pm_thresh_entry-words c-struct .pm_thresh_entry
+also pm_thresh_entry-words definitions
+
+' .x 8 ptr-field pte_thresh
+' .x 0 long-field pte_numthresh
+
+kdbg-words definitions
+previous
+
+\ end pm_thresh_entry section
+
+
+vocabulary pm_thresh_rec-words
+h# 28 constant pm_thresh_rec-sz
+28 ' pm_thresh_rec-words c-struct .pm_thresh_rec
+also pm_thresh_rec-words definitions
+
+' .x 20 ptr-field ptr_entries
+' .x 10 long-field ptr_numcomps
+' .x 8 ptr-field ptr_next
+' .str 0 ptr-field ptr_physpath
+
+kdbg-words definitions
+previous
+
+\ end pm_thresh_rec section
+
+: pm_info ( adr-struct -- )
+  [ also pm_info-words ]
+  dup pmi_dev_pm_state ." state " .x cr
+  [ previous ]
+;
+
+: pm_component ( adr-pm_component-struct -- )
+   [ also pm_component-words ]
+   dup pmc_flags ." pmc_flags: " .x cr
+   dup pmc_busycount ." pmc_busycount: 0x" .x cr
+   dup pmc_timestamp ." pmc_timestamp: 0x" .x cr
+   pmc_norm_pwr ." pmc_norm_pwr (index): 0x" .x cr
+  [ previous ]
+;
+
+
+vocabulary dev_info-words
+h# 290 constant dev_info-sz
+290 ' dev_info-words c-struct .dev_info
+also dev_info-words definitions
+
+' .x 288 long-field devi_ev_instance
+' .x 280 ptr-field devi_ev_path
+' .x 278 ptr-field devi_in_node
+' .x 270 ptr-field devi_hp_hdlp
+' .x 268 ptr-field devi_flavorv
+' .x 261 byte-field devi_flavorv_n
+' .x 260 byte-field devi_flavor
+' .x 258 ptr-field devi_cb_p
+' .x 250 ptr-field devi_prop_dyn_parent
+' .x 248 ptr-field devi_prop_dyn_driver
+' .x 228 struct-field devi_bus
+' .x 208 struct-field devi_ct
+' .x 200 long-field devi_ct_neg
+' .x 1fc long-field devi_ct_count
+' .x 1f8 struct-field devi_ct_cv
+' .x 1f0 struct-field devi_ct_lock
+' .x 1e8 ptr-field devi_rebinding_name
+' .x 1e0 ptr-field devi_addr_buf
+' .x 1d8 ptr-field devi_nex_pm
+' .x 1d0 ptr-field devi_intr_p
+' .x 1c8 long-field devi_cpr_flags
+' .x 1c0 ptr-field devi_fmhdl
+' .x 1b8 ptr-field devi_audit
+' .x 1b0 ptr-field devi_taskq
+' .x 1a8 ptr-field devi_busy_thread
+' .x 1a4 long-field devi_circular
+' .x 1a0 long-field devi_flags
+' .d 19c long-field devi_node_state
+' .x 198 long-field devi_major
+' .x 190 ptr-field devi_global_prop_list
+' .x 188 ptr-field devi_mdi_xhci
+' .x 180 ptr-field devi_mdi_client
+' .x 178 long-field devi_mdi_component
+' .x 170 ptr-field devi_device_class
+' .x 16c long-field devi_node_attributes
+' .d 168 long-field devi_node_class
+' .x 160 ptr-field devi_dacf_tasks
+' .x 158 long-field devi_ref
+' .x 154 struct-field devi_cv
+' .x 150 long-field devi_state
+' .x 148 struct-field devi_pm_busy_lock
+' .x 140 struct-field devi_pm_lock
+' .x 13c long-field devi_pm_volpmd
+' .x 138 long-field devi_pm_noinvolpm
+' .x 130 ptr-field devi_pm_scan
+' .x 12c long-field devi_pm_kidsupcnt
+' .x 128 long-field devi_pm_dev_thresh
+' .x 120 ptr-field devi_pm_ppm_private
+' .x 118 ptr-field devi_pm_ppm
+' .x 110 ptr-field devi_pm_components
+' .x 108 ext-field devi_pm_comp_size
+' .x 104 long-field devi_pm_num_components
+' .x 100 long-field devi_pm_flags
+' .x f8 ptr-field devi_pm_info
+' .x f0 ptr-field devi_devid_str
+' .x e8 ptr-field devi_bus_dma_unbindfunc
+' .x e0 ptr-field devi_bus_dma_bindfunc
+' .x d8 ext-field devi_compat_length
+' .x d0 ptr-field devi_compat_names
+' .x c8 ptr-field devi_node_name
+' .x c0 ptr-field devi_hw_prop_ptr
+' .x b8 ptr-field devi_bus_ctl
+' .x b0 ptr-field devi_bus_dma_ctl
+' .x a8 ptr-field devi_bus_dma_win
+' .x a0 ptr-field devi_bus_dma_flush
+' .x 98 ptr-field devi_bus_dma_unbindhdl
+' .x 90 ptr-field devi_bus_dma_bindhdl
+' .x 88 ptr-field devi_bus_dma_freehdl
+' .x 80 ptr-field devi_bus_dma_allochdl
+' .x 78 ptr-field devi_bus_dma_map
+' .x 70 ptr-field devi_bus_map_fault
+' .x 68 struct-field devi_lock
+' .x 60 ptr-field devi_next
+' .x 58 ptr-field devi_minor
+' .x 50 ptr-field devi_sys_prop_ptr
+' .x 48 ptr-field devi_drv_prop_ptr
+' .x 40 ptr-field devi_driver_data
+' .x 38 ptr-field devi_parent_data
+' .x 30 ptr-field devi_ops
+' .x 2c long-field devi_instance
+' .x 28 long-field devi_nodeid
+' .x 20 ptr-field devi_addr
+' .x 18 ptr-field devi_binding_name
+' .x 10 ptr-field devi_sibling
+' .x 8 ptr-field devi_child
+' .x 0 ptr-field devi_parent
+
+kdbg-words definitions
+previous
+
+\ end dev_info section
+
+
+vocabulary lldaddr_t-words
+h# 8 constant lldaddr_t-sz
+8 ' lldaddr_t-words c-struct .lldaddr_t
+also lldaddr_t-words definitions
+
+' .x 0 ext-field _f
+
+kdbg-words definitions
+previous
+
+\ end lldaddr_t section
+
+
+vocabulary buf.b_un-words
+h# 8 constant buf.b_un-sz
+8 ' buf.b_un-words c-struct .buf.b_un
+also buf.b_un-words definitions
+
+' .x 0 ptr-field b_addr
+
+kdbg-words definitions
+previous
+
+\ end buf.b_un section
+
+
+vocabulary buf-words
+h# f8 constant buf-sz
+f8 ' buf-words c-struct .buf
+also buf-words definitions
+
+' .dev_t a8 ext-field b_edev
+' .d 9c long-field b_error
+' .x 88 ptr-field b_vp
+' .x 80 ptr-field b_iodone
+' .d 78 ext-field b_bufsize
+' .x 68 ptr-field b_pages
+' .addr>sym 60 ptr-field b_proc
+' .d 50 ext-field b_resid
+' .lldaddr_t 40 struct-field _b_blkno
+' .buf.b_un 38 struct-field b_un
+' .d 30 ext-field b_bcount
+' .x 20 ptr-field av_back
+' .x 18 ptr-field av_forw
+' .x 10 ptr-field b_back
+' .x 8 ptr-field b_forw
+' .x 0 long-field b_flags
+
+kdbg-words definitions
+previous
+
+\ end buf section
+
+
+vocabulary uio-words
+h# 30 constant uio-sz
+30 ' uio-words c-struct .uio
+also uio-words definitions
+
+' .x 28 ext-field uio_resid
+' .x 20 struct-field _uio_limit
+' .x 1e short-field uio_extflg
+' .x 1c short-field uio_fmode
+' .d 18 long-field uio_segflg
+' .x 10 struct-field _uio_offset
+' .x 8 long-field uio_iovcnt
+' .x 0 ptr-field uio_iov
+
+kdbg-words definitions
+previous
+
+\ end uio section
+
+
+vocabulary iovec-words
+h# 10 constant iovec-sz
+10 ' iovec-words c-struct .iovec
+also iovec-words definitions
+
+' .x 8 ext-field iov_len
+' .x 0 ptr-field iov_base
+
+kdbg-words definitions
+previous
+
+\ end iovec section
+
+
+: .devinfo-tree ( dip -- ) recursive
+   [ also dev_info-words ]
+   dup .dev_info cr           ( dip )
+   dup devi_child ?dup  if    ( dip child )
+      .devinfo-tree cr        ( dip )
+   then                       ( dip )
+   dup devi_sibling ?dup  if  ( dip sibling )
+      .devinfo-tree cr        ( dip )
+   then                       ( dip )
+   drop                       ( )
+   [ previous ]
+;
+
+: .devinfo-inst ( dip -- )
+   [ also dev_info-words ]
+   begin  ?dup  while         ( dip )
+      dup .dev_info cr        ( dip )
+      devi_next               ( nextdip )
+   repeat                     ( )
+   [ previous ]
+;
+
+: .devinfo-level ( dip -- )
+   [ also dev_info-words ]
+   begin  ?dup  while         ( dip )
+      dup .dev_info cr        ( dip)
+      devi_sibling            ( siblingdip )
+   repeat                     ( )
+   [ previous ]
+;
+
+: pm_devinfo ( adr-struct-dev_info -- )
+   [ also dev_info-words ]
+   [ also pm_info-words ]
+   [ also pm_component-words ]
+   dup devi_binding_name ." name: " .str
+   dup devi_addr ." @" .str cr
+   dup devi_pm_info ." devi_pm_info: " .x space
+   dup 0 <> if dup devi_pm_info  pm_info then cr
+   dup devi_pm_components ." devi_pm_components: " .x space
+   devi_pm_components pm_component
+   [ previous ]
+;
+
+
+vocabulary kmem_bufctl-words
+h# 18 constant kmem_bufctl-sz
+18 ' kmem_bufctl-words c-struct .kmem_bufctl
+also kmem_bufctl-words definitions
+
+' .x 10 ptr-field bc_slab
+' .x 8 ptr-field bc_addr
+' .x 0 ptr-field bc_next
+
+kdbg-words definitions
+previous
+
+\ end kmem_bufctl section
+
+
+vocabulary kmem_bufctl_audit-words
+h# 80 constant kmem_bufctl_audit-sz
+80 ' kmem_bufctl_audit-words c-struct .kmem_bufctl_audit
+also kmem_bufctl_audit-words definitions
+
+' l@ ' .x 3c 4 44 array-field bc_stack
+' .x 40 long-field bc_depth
+' .x 38 ptr-field bc_contents
+' .x 30 ptr-field bc_lastlog
+' .x 28 ptr-field bc_thread
+' .x 20 ext-field bc_timestamp
+' .x 18 ptr-field bc_cache
+' .x 10 ptr-field bc_slab
+' .x 8 ptr-field bc_addr
+' .x 0 ptr-field bc_next
+
+kdbg-words definitions
+previous
+
+\ end kmem_bufctl_audit section
+
+
+vocabulary kmem_buftag-words
+h# 18 constant kmem_buftag-sz
+18 ' kmem_buftag-words c-struct .kmem_buftag
+also kmem_buftag-words definitions
+
+' .x 10 ext-field bt_bxstat
+' .x 8 ptr-field bt_bufctl
+' .x 0 ext-field bt_redzone
+
+kdbg-words definitions
+previous
+
+\ end kmem_buftag section
+
+
+vocabulary kmem_slab-words
+h# 48 constant kmem_slab-sz
+48 ' kmem_slab-words c-struct .kmem_slab
+also kmem_slab-words definitions
+
+' .x 46 short-field slab_flags
+' .x 44 short-field slab_later_count
+' .x 40 long-field slab_stuck_offset
+' .x 38 ext-field slab_chunks
+' .x 30 ext-field slab_refcnt
+' .x 28 ptr-field slab_head
+' .x 10 struct-field slab_link
+' .x 8 ptr-field slab_base
+' .x 0 ptr-field slab_cache
+
+kdbg-words definitions
+previous
+
+\ end kmem_slab section
+
+
+vocabulary kmem_cpu_cache-words
+h# 40 constant kmem_cpu_cache-sz
+40 ' kmem_cpu_cache-words c-struct .kmem_cpu_cache
+also kmem_cpu_cache-words definitions
+
+' c@ ' .x a 1 36 array-field cc_pad
+' .x 34 short-field cc_dump_prounds
+' .x 32 short-field cc_dump_rounds
+' .x 30 short-field cc_magsize
+' .x 2e short-field cc_prounds
+' .x 2c short-field cc_rounds
+' .x 28 long-field cc_flags
+' .x 20 ptr-field cc_ploaded
+' .x 18 ptr-field cc_loaded
+' .x 10 ext-field cc_free
+' .x 8 ext-field cc_alloc
+' .x 0 struct-field cc_lock
+
+kdbg-words definitions
+previous
+
+\ end kmem_cpu_cache section
+
+
+vocabulary kmem_cache-words
+h# 278 constant kmem_cache-sz
+278 ' kmem_cache-words c-struct .kmem_cache
+also kmem_cache-words definitions
+
+' noop ' .x 40 40 238 array-field cache_cpu
+' .x 230 ptr-field cache_dumplog
+' .x 228 ptr-field cache_dumpfreelist
+' .x 200 struct-field cache_empty
+' .x 1d8 struct-field cache_full
+' .x 1d0 ptr-field cache_magtype
+' .x 1c8 struct-field cache_depot_lock
+' .x 1c0 ptr-field cache_defrag
+' .x 1b8 ptr-field cache_hash_table
+' .x 1b0 ptr-field cache_bufctl_cache
+' .x 1a8 ext-field cache_partial_binshift
+' .x 180 struct-field cache_partial_slabs
+' .x 178 ext-field cache_complete_slab_count
+' .x 158 struct-field cache_complete_slabs
+' .x 150 ext-field cache_hash_mask
+' .x 148 ext-field cache_hash_shift
+' .x 140 ext-field cache_maxcolor
+' .x 138 ext-field cache_mincolor
+' .x 130 ext-field cache_color
+' .x 128 ext-field cache_contents
+' .x 120 ext-field cache_verify
+' .x 118 ext-field cache_buftag
+' .x 110 ext-field cache_bufctl
+' .x 108 ext-field cache_maxchunks
+' .x 100 ext-field cache_slabsize
+' .x f8 ext-field cache_chunksize
+' .x f0 struct-field cache_lock
+' .x e0 struct-field cache_link
+' .x d8 ptr-field cache_kstat
+' .x d4 long-field cache_pad1
+' .x d0 long-field cache_mtbf
+' .x cc long-field cache_flags
+' .x c8 long-field cache_cflags
+' .x c0 ptr-field cache_arena
+' .x b8 ptr-field cache_private
+' .x b0 ptr-field cache_move
+' .x a8 ptr-field cache_reclaim
+' .x a0 ptr-field cache_destructor
+' .x 98 ptr-field cache_constructor
+' .x 90 ext-field cache_align
+' .x 88 ext-field cache_bufsize
+' c@ ' .x 20 1 68 array-field cache_name
+' .x 60 ext-field cache_depot_contention_prev
+' .x 58 ext-field cache_depot_contention
+' .x 50 ext-field cache_lookup_depth
+' .x 48 ext-field cache_rescale
+' .x 40 ext-field cache_reap
+' .x 38 ext-field cache_bufslab
+' .x 30 ext-field cache_bufmax
+' .x 28 ext-field cache_buftotal
+' .x 20 ext-field cache_alloc_fail
+' .x 18 ext-field cache_slab_free
+' .x 10 ext-field cache_slab_alloc
+' .x 8 ext-field cache_slab_destroy
+' .x 0 ext-field cache_slab_create
+
+kdbg-words definitions
+previous
+
+\ end kmem_cache section
+
+
+h# feed.face constant buftag-marker
+
+: >kmem_buftag  ( addr -- buftag )
+   symbol kmem_flags l@  h# f and
+   0=  if  ." no buftags in kmem flags" drop exit  then
+   /l round-up
+   begin  dup l@ buftag-marker <>  while  la1+  repeat
+   2 la+
+;
+
+: bufaudit-trace  ( bufaudit -- ) 
+   [ also kmem_bufctl_audit-words ]
+   dup bc_depth 0  do
+      dup i ['] bc_stack index  .addr>sym cr
+   loop  drop
+   [ previous ]
+;
+
+
+vocabulary vmem_seg-words
+h# 98 constant vmem_seg-sz
+98 ' vmem_seg-words c-struct .vmem_seg
+also vmem_seg-words definitions
+
+' l@ ' .x 50 4 48 array-field vs_stack
+' .x 40 ext-field vs_timestamp
+' .x 38 ptr-field vs_thread
+' .x 32 byte-field vs_depth
+' .x 31 byte-field vs_import
+' .x 30 byte-field vs_type
+' .x 28 ptr-field vs_aprev
+' .x 20 ptr-field vs_anext
+' .x 18 ptr-field vs_kprev
+' .x 10 ptr-field vs_knext
+' .x 8 ext-field vs_end
+' .x 0 ext-field vs_start
+
+kdbg-words definitions
+previous
+
+\ end vmem_seg section
+
+
+vocabulary vmem_freelist-words
+h# 20 constant vmem_freelist-sz
+20 ' vmem_freelist-words c-struct .vmem_freelist
+also vmem_freelist-words definitions
+
+' .x 18 ptr-field vs_kprev
+' .x 10 ptr-field vs_knext
+' .x 8 ext-field vs_end
+' .x 0 ext-field vs_start
+
+kdbg-words definitions
+previous
+
+\ end vmem_freelist section
+
+
+vocabulary vmem-words
+h# d98 constant vmem-sz
+d98 ' vmem-words c-struct .vmem
+also vmem-words definitions
+
+' .x a0 ext-field vm_freemap
+' .x 98 ext-field vm_hash_shift
+' .x 90 ext-field vm_hash_mask
+' .x 88 ptr-field vm_hash_table
+' .x 80 ptr-field vm_segfree
+' .d 78 ext-field vm_nsegfree
+' .x 70 ptr-field vm_ksp
+' .x 68 ptr-field vm_next
+' .x 60 ptr-field vm_source
+' .addr>sym 58 ptr-field vm_source_free
+' .addr>sym 50 ptr-field vm_source_alloc
+' .d 40 ext-field vm_qcache_max
+' .d 38 ext-field vm_quantum
+' .d 34 long-field vm_qshift
+' .mutex 20 struct-field vm_lock
+' .x 1e struct-field vm_cv
+' c@ ' emit 1e 1 0 array-field vm_name
+
+kdbg-words definitions
+previous
+
+\ end vmem section
+
+
+here ," VNON" 0
+here ," VREG" 1
+here ," VDIR" 2
+here ," VBLK" 3
+here ," VCHR" 4
+here ," VLNK" 5
+here ," VFIFO" 6
+here ," VDOOR" 7
+here ," VPROC" 8
+here ," VSOCK" 9
+here ," VPORT" a
+here ," VBAD" b
+c c-enum .vtype
+
+vocabulary vattr-words
+h# 88 constant vattr-sz
+88 ' vattr-words c-struct .vattr
+also vattr-words definitions
+
+' .d 78 ext-field va_nblocks
+' .d 70 long-field va_blksize
+' .dev_t 68 ext-field va_rdev
+' .timespec 58 struct-field va_ctime
+' .timespec 48 struct-field va_mtime
+' .timespec 38 struct-field va_atime
+' .d 30 ext-field va_size
+' .d 28 long-field va_nlink
+' .x 20 ext-field va_nodeid
+' .x 18 ext-field va_fsid
+' .d 10 long-field va_gid
+' .d c long-field va_uid
+' .x 8 long-field va_mode
+' .d 4 long-field va_type
+' .x 0 long-field va_mask
+
+kdbg-words definitions
+previous
+
+\ end vattr section
+
+
+vocabulary vnode-words
+h# d0 constant vnode-sz
+d0 ' vnode-words c-struct .vnode
+also vnode-words definitions
+
+' .x 50 ptr-field v_filocks
+' .x 48 ptr-field v_pages
+' .addr>sym 40 ptr-field v_op
+' .x 38 ptr-field v_vfsmountedhere
+' .dev_t 30 ext-field v_rdev
+' .vtype 28 long-field v_type
+' .x 20 ptr-field v_stream
+' .x 18 ptr-field v_vfsp
+' .x 10 ptr-field v_data
+' .d c long-field v_count
+' .x 8 long-field v_flag
+
+kdbg-words definitions
+previous
+
+\ end vnode section
+
+
+vocabulary vfs-words
+h# d0 constant vfs-sz
+d0 ' vfs-words c-struct .vfs
+also vfs-words definitions
+
+' .x b8 ptr-field vfs_zone_prev
+' .x b0 ptr-field vfs_zone_next
+' .x a8 ptr-field vfs_zone
+' .x 58 ptr-field vfs_hash
+' .x 50 ptr-field vfs_list
+' .dev_t 40 ext-field vfs_dev
+' .x 38 ptr-field vfs_data
+' .d 28 long-field vfs_fstype
+' .x 20 long-field vfs_flag
+' .x 18 ptr-field vfs_vnodecovered
+' .addr>sym 10 ptr-field vfs_op
+' .x 8 ptr-field vfs_prev
+' .x 0 ptr-field vfs_next
+
+kdbg-words definitions
+previous
+
+\ end vfs section
+
+
+vocabulary callout-words
+h# 50 constant callout-sz
+50 ' callout-words c-struct .callout
+also callout-words definitions
+
+' .x 4a short-field c_waiting
+' .x 48 struct-field c_done
+' .x 40 ptr-field c_executor
+' .x 38 ptr-field c_arg
+' .x 30 ptr-field c_func
+' .x 28 ptr-field c_list
+' .x 20 ext-field c_xid
+' .x 18 ptr-field c_clprev
+' .x 10 ptr-field c_clnext
+' .x 8 ptr-field c_idprev
+' .x 0 ptr-field c_idnext
+
+kdbg-words definitions
+previous
+
+\ end callout section
+
+
+vocabulary callout_table-words
+h# c0 constant callout_table-sz
+c0 ' callout_table-words c-struct .callout_table
+also callout_table-words definitions
+
+' .x b0 struct-field ct_queue
+' .x a8 ext-field ct_qcyclic
+' .x a0 long-field ct_nreap
+' .x 98 ptr-field ct_kstats
+' .x 90 ptr-field ct_taskq
+' .x 80 struct-field ct_expired
+' .x 78 ext-field ct_gen_id
+' .x 70 ptr-field ct_lcache
+' .x 68 ptr-field ct_cache
+' .x 60 ext-field ct_heap_max
+' .x 58 ext-field ct_heap_num
+' .x 50 ptr-field ct_heap
+' .x 48 ext-field ct_cyclic
+' .x 44 long-field ct_suspend
+' .x 40 long-field ct_type
+' .x 38 ptr-field ct_kstat_data
+' .x 30 ptr-field ct_clhash
+' .x 28 ptr-field ct_idhash
+' .x 20 ext-field ct_long_id
+' .x 18 ext-field ct_short_id
+' .x 10 ptr-field ct_lfree
+' .x 8 ptr-field ct_free
+' .x 0 struct-field ct_mutex
+
+kdbg-words definitions
+previous
+
+\ end callout_table section
+
+
+vocabulary cred-words
+h# 80 constant cred-sz
+80 ' cred-words c-struct .cred
+also cred-words definitions
+
+' .x 58 ptr-field cr_zone
+' .d 18 long-field cr_sgid
+' .d 14 long-field cr_suid
+' .d 10 long-field cr_rgid
+' .d c long-field cr_ruid
+' .d 8 long-field cr_gid
+' .d 4 long-field cr_uid
+' .d 0 long-field cr_ref
+
+kdbg-words definitions
+previous
+
+\ end cred section
+
+
+vocabulary kstat_named.value-words
+h# 10 constant kstat_named.value-sz
+10 ' kstat_named.value-words c-struct .kstat_named.value
+also kstat_named.value-words definitions
+
+' .x 0 ext-field ul
+
+kdbg-words definitions
+previous
+
+\ end kstat_named.value section
+
+
+vocabulary kstat_named-words
+h# 30 constant kstat_named-sz
+30 ' kstat_named-words c-struct .kstat_named
+also kstat_named-words definitions
+
+' .kstat_named.value 20 struct-field value
+' c@ ' emit 1f 1 0 array-field name
+
+kdbg-words definitions
+previous
+
+\ end kstat_named section
+
+
+vocabulary kstat-words
+h# b8 constant kstat-sz
+b8 ' kstat-words c-struct .kstat
+also kstat-words definitions
+
+' .x b0 ptr-field ks_lock
+' .x a8 ptr-field ks_snapshot
+' .x a0 ptr-field ks_private
+' .x 98 ptr-field ks_update
+' .x 90 ext-field ks_snaptime
+' .x 88 ext-field ks_data_size
+' .x 80 long-field ks_ndata
+' .x 78 ptr-field ks_data
+' .x 77 byte-field ks_flags
+' c@ ' .x 1f 1 58 array-field ks_class
+' .x 57 byte-field ks_type
+' c@ ' .x 1f 1 38 array-field ks_name
+' .x 34 long-field ks_instance
+' .x 33 byte-field ks_resv
+' c@ ' .x 1f 1 14 array-field ks_module
+' .x 10 long-field ks_kid
+' .x 8 ptr-field ks_next
+' .x 0 ext-field ks_crtime
+
+kdbg-words definitions
+previous
+
+\ end kstat section
+
+
+vocabulary cyc_cpu-words
+h# c0d0 constant cyc_cpu-sz
+c0d0 ' cyc_cpu-words c-struct .cyc_cpu
+also cyc_cpu-words definitions
+
+' noop ' .x c018 4008 b8 array-field cyp_trace
+' .x b4 long-field cyp_rpend
+' .x b0 long-field cyp_modify_levels
+' .x a0 struct-field cyp_modify_wait
+' .x 98 ptr-field cyp_backend
+' noop ' .x 70 38 28 array-field cyp_softbuf
+' .d 20 long-field cyp_state
+' .x 1c long-field cyp_size
+' .x 18 long-field cyp_nelems
+' .x 10 ptr-field cyp_cyclics
+' .x 8 ptr-field cyp_heap
+' .x 0 ptr-field cyp_cpu
+
+kdbg-words definitions
+previous
+
+\ end cyc_cpu section
+
+
+vocabulary cyclic-words
+h# 28 constant cyclic-sz
+28 ' cyclic-words c-struct .cyclic
+also cyclic-words definitions
+
+' .x 26 short-field cy_level
+' .x 24 short-field cy_flags
+' .x 20 long-field cy_pend
+' .x 18 ptr-field cy_arg
+' .x 10 ptr-field cy_handler
+' .x 8 ext-field cy_interval
+' .x 0 ext-field cy_expire
+
+kdbg-words definitions
+previous
+
+\ end cyclic section
+
+
+vocabulary cyc_pcbuffer-words
+h# 18 constant cyc_pcbuffer-sz
+18 ' cyc_pcbuffer-words c-struct .cyc_pcbuffer
+also cyc_pcbuffer-words definitions
+
+' .x 10 long-field cypc_sizemask
+' .x c long-field cypc_consndx
+' .x 8 long-field cypc_prodndx
+' .x 0 ptr-field cypc_buf
+
+kdbg-words definitions
+previous
+
+\ end cyc_pcbuffer section
+
+
+vocabulary cyc_softbuf-words
+h# 38 constant cyc_softbuf-sz
+38 ' cyc_softbuf-words c-struct .cyc_softbuf
+also cyc_softbuf-words definitions
+
+' noop ' .x 30 18 8 array-field cys_buf
+' .x 1 byte-field cys_soft
+' .x 0 byte-field cys_hard
+
+kdbg-words definitions
+previous
+
+\ end cyc_softbuf section
+
+
+vocabulary cyc_id-words
+h# 48 constant cyc_id-sz
+48 ' cyc_id-words c-struct .cyc_id
+also cyc_id-words definitions
+
+' .x 40 ptr-field cyi_omni_list
+' .x 28 struct-field cyi_omni_hdlr
+' .x 20 ptr-field cyi_next
+' .x 18 ptr-field cyi_prev
+' .x 10 long-field cyi_ndx
+' .x 8 ptr-field cyi_cpu
+' .x 0 struct-field cyi_lock
+
+kdbg-words definitions
+previous
+
+\ end cyc_id section
+
+
+vocabulary cyc_tracerec-words
+h# 20 constant cyc_tracerec-sz
+20 ' cyc_tracerec-words c-struct .cyc_tracerec
+also cyc_tracerec-words definitions
+
+' .x 18 ext-field cyt_arg1
+' .x 10 ext-field cyt_arg0
+' .str 8 ptr-field cyt_why
+' .x 0 ext-field cyt_tstamp
+
+kdbg-words definitions
+previous
+
+\ end cyc_tracerec section
+
+
+vocabulary cyc_tracebuf-words
+h# 4008 constant cyc_tracebuf-sz
+4008 ' cyc_tracebuf-words c-struct .cyc_tracebuf
+also cyc_tracebuf-words definitions
+
+' noop ' .x 4000 20 8 array-field cyt_buf
+' .x 0 long-field cyt_ndx
+
+kdbg-words definitions
+previous
+
+\ end cyc_tracebuf section
+
+
+vocabulary streamtab-words
+h# 20 constant streamtab-sz
+20 ' streamtab-words c-struct .streamtab
+also streamtab-words definitions
+
+' .x 18 ptr-field st_muxwinit
+' .x 10 ptr-field st_muxrinit
+' .x 8 ptr-field st_wrinit
+' .x 0 ptr-field st_rdinit
+
+kdbg-words definitions
+previous
+
+\ end streamtab section
+
+
+vocabulary stroptions-words
+h# 40 constant stroptions-sz
+40 ' stroptions-words c-struct .stroptions
+also stroptions-words definitions
+
+' .x 3a short-field so_tail
+' .x 38 short-field so_copyopt
+' .x 30 ext-field so_maxblk
+' .x 2a short-field so_erropt
+' .x 28 byte-field so_band
+' .x 20 ext-field so_lowat
+' .x 18 ext-field so_hiwat
+' .x 10 ext-field so_maxpsz
+' .x 8 ext-field so_minpsz
+' .x 6 short-field so_wroff
+' .x 4 short-field so_readopt
+' .x 0 long-field so_flags
+
+kdbg-words definitions
+previous
+
+\ end stroptions section
+
+
+vocabulary struiod-words
+h# 138 constant struiod-sz
+138 ' struiod-words c-struct .struiod
+also struiod-words definitions
+
+' noop ' .x 100 10 38 array-field d_iov
+' .x 8 struct-field d_uio
+' .x 0 ptr-field d_mp
+
+kdbg-words definitions
+previous
+
+\ end struiod section
+
+
+vocabulary infod-words
+h# 18 constant infod-sz
+18 ' infod-words c-struct .infod
+also infod-words definitions
+
+' .x 10 ptr-field d_uiop
+' .x 8 long-field d_count
+' .x 4 long-field d_bytes
+' .x 1 byte-field d_res
+' .x 0 byte-field d_cmd
+
+kdbg-words definitions
+previous
+
+\ end infod section
+
+
+vocabulary queue-words
+h# f8 constant queue-sz
+f8 ' queue-words c-struct .queue
+also queue-words definitions
+
+' .x f0 ptr-field q_fp
+' .x e8 ext-field q_sqtstamp
+' .x e0 long-field q_sqflags
+' .x d8 ptr-field q_sqprev
+' .x d0 ptr-field q_sqnext
+' .x c8 ptr-field q_sqtail
+' .x c0 ptr-field q_sqhead
+' .x b8 short-field q_spri
+' .x b0 ext-field q_rwcnt
+' .x a8 long-field q_syncqmsgs
+' .x a0 ext-field q_mblkcnt
+' .x 98 ext-field q_qtstamp
+' .x 92 short-field q_struiot
+' .x 90 short-field q_draining
+' .x 88 ptr-field q_nfsrv
+' .x 82 struct-field q_wait
+' .x 80 byte-field q_nband
+' .x 78 ptr-field q_syncq
+' .x 70 ptr-field q_stream
+' .x 68 struct-field q_lock
+' .x 60 ptr-field q_bandp
+' .x 58 ext-field q_lowat
+' .x 50 ext-field q_hiwat
+' .x 48 ext-field q_maxpsz
+' .x 40 ext-field q_minpsz
+' .x 38 long-field q_flag
+' .x 30 ext-field q_count
+' .x 28 ptr-field q_ptr
+' .x 20 ptr-field q_link
+' .x 18 ptr-field q_next
+' .x 10 ptr-field q_last
+' .x 8 ptr-field q_first
+' .x 0 ptr-field q_qinfo
+
+kdbg-words definitions
+previous
+
+\ end queue section
+
+
+vocabulary module_info-words
+h# 30 constant module_info-sz
+30 ' module_info-words c-struct .module_info
+also module_info-words definitions
+
+' .d 28 ext-field mi_lowat
+' .d 20 ext-field mi_hiwat
+' .d 18 ext-field mi_maxpsz
+' .d 10 ext-field mi_minpsz
+' .str 8 ptr-field mi_idname
+' .d 0 short-field mi_idnum
+
+kdbg-words definitions
+previous
+
+\ end module_info section
+
+
+vocabulary qinit-words
+h# 50 constant qinit-sz
+50 ' qinit-words c-struct .qinit
+also qinit-words definitions
+
+' .x 48 long-field qi_struiot
+' .addr>sym 40 ptr-field qi_infop
+' .module_info 28 ptr-field qi_minfo
+' .addr>sym 20 ptr-field qi_qadmin
+' .addr>sym 18 ptr-field qi_qclose
+' .addr>sym 10 ptr-field qi_qopen
+' .addr>sym 8 ptr-field qi_srvp
+' .addr>sym 0 ptr-field qi_putp
+
+kdbg-words definitions
+previous
+
+\ end qinit section
+
+
+vocabulary linkblk-words
+h# 18 constant linkblk-sz
+18 ' linkblk-words c-struct .linkblk
+also linkblk-words definitions
+
+' .x 10 long-field l_index
+' .x 8 ptr-field l_qbot
+' .x 0 ptr-field l_qtop
+
+kdbg-words definitions
+previous
+
+\ end linkblk section
+
+
+vocabulary free_rtn-words
+h# 10 constant free_rtn-sz
+10 ' free_rtn-words c-struct .free_rtn
+also free_rtn-words definitions
+
+' .x 8 ptr-field free_arg
+' .x 0 ptr-field free_func
+
+kdbg-words definitions
+previous
+
+\ end free_rtn section
+
+
+vocabulary stdata-words
+h# 178 constant stdata-sz
+178 ' stdata-words c-struct .stdata
+also stdata-words definitions
+
+' .x 170 ptr-field sd_cmdblk
+' .x 16c long-field sd_anchorzone
+' .x 168 long-field sd_copyflag
+' .x 166 struct-field sd_zcopy_wait
+' .x 164 struct-field sd_qcv
+' .x 162 short-field sd_nqueues
+' .x 160 short-field sd_svcflags
+' .x 158 ptr-field sd_servid
+' .x 150 ptr-field sd_qtail
+' .x 148 ptr-field sd_qhead
+' .x 140 struct-field sd_qlock
+' .x 13c long-field sd_anchor
+' .x 138 long-field sd_nciputctrl
+' .x 130 ptr-field sd_ciputctrl
+' .x 128 ptr-field sd_wrerrfunc
+' .x 120 ptr-field sd_rderrfunc
+' .x 118 ptr-field sd_wputdatafunc
+' .x 110 ptr-field sd_rmiscfunc
+' .x 108 ptr-field sd_rputdatafunc
+' .x 100 ptr-field sd_rprotofunc
+' .x f8 long-field sd_read_opt
+' .x f4 long-field sd_wput_opt
+' .x f0 long-field sd_rput_opt
+' .x e8 ext-field sd_maxblk
+' .x e0 ptr-field sd_t_audit_data
+' .x d8 ptr-field sd_struionak
+' .x d0 byte-field sd_struiodnak
+' .x c8 ptr-field sd_struiowrq
+' .x c0 ptr-field sd_struiordq
+' .x bc long-field sd_wakeq
+' .x b8 long-field sd_refcnt
+' .x b0 struct-field sd_reflock
+' .x a8 ptr-field sd_freezer
+' .x a0 ptr-field sd_mate
+' .x 98 ext-field sd_qn_maxpsz
+' .x 90 ext-field sd_qn_minpsz
+' .x 8c struct-field sd_refmonitor
+' .x 8a struct-field sd_iocmonitor
+' .x 88 struct-field sd_monitor
+' .x 80 struct-field sd_lock
+' .x 78 ext-field sd_closetime
+' .x 70 ptr-field sd_mark
+' .x 58 struct-field sd_pollist
+' .x 50 ptr-field sd_siglist
+' .x 48 long-field sd_sigflags
+' .x 44 long-field sd_pushcnt
+' .x 40 long-field sd_werror
+' .x 3c long-field sd_rerror
+' .x 3a short-field sd_wroff
+' .x 38 short-field sd_tail
+' .x 30 ptr-field sd_pgidp
+' .x 28 ptr-field sd_sidp
+' .x 24 long-field sd_iocid
+' .x 20 long-field sd_flag
+' .x 18 ptr-field sd_strtab
+' .x 10 ptr-field sd_vnode
+' .x 8 ptr-field sd_iocblk
+' .x 0 ptr-field sd_wrq
+
+kdbg-words definitions
+previous
+
+\ end stdata section
+
+
+vocabulary syncq-words
+h# a0 constant syncq-sz
+a0 ' syncq-words c-struct .syncq
+also syncq-words definitions
+
+' .x 98 short-field sq_pri
+' .x 90 ext-field sq_tstamp
+' .x 8c long-field sq_svcflags
+' .x 88 long-field sq_servcount
+' .x 80 ptr-field sq_servid
+' .x 78 ptr-field sq_next
+' .x 74 long-field sq_needexcl
+' .x 70 long-field sq_nciputctrl
+' .x 68 ptr-field sq_ciputctrl
+' .x 60 ptr-field sq_oprev
+' .x 58 ptr-field sq_onext
+' .x 50 ptr-field sq_outer
+' .x 48 ptr-field sq_callbpend
+' .x 40 ext-field sq_cancelid
+' .x 3c short-field sq_callbflags
+' .x 3a struct-field sq_exitwait
+' .x 38 struct-field sq_wait
+' .x 36 short-field sq_rmqcount
+' .x 34 short-field sq_type
+' .x 30 long-field sq_nqueues
+' .x 28 ptr-field sq_evtail
+' .x 20 ptr-field sq_evhead
+' .x 18 ptr-field sq_tail
+' .x 10 ptr-field sq_head
+' .x a short-field sq_flags
+' .x 8 short-field sq_count
+' .x 0 struct-field sq_lock
+
+kdbg-words definitions
+previous
+
+\ end syncq section
+
+
+vocabulary msgb-words
+h# 40 constant msgb-sz
+40 ' msgb-words c-struct .msgb
+also msgb-words definitions
+
+' .x 38 ptr-field b_queue
+' .x 32 short-field b_flag
+' .x 31 byte-field b_tag
+' .x 30 byte-field b_band
+' .x 28 ptr-field b_datap
+' .x 20 ptr-field b_wptr
+' .x 18 ptr-field b_rptr
+' .x 10 ptr-field b_cont
+' .x 8 ptr-field b_prev
+' .x 0 ptr-field b_next
+
+kdbg-words definitions
+previous
+
+\ end msgb section
+
+
+vocabulary datab-words
+h# 70 constant datab-sz
+70 ' datab-words c-struct .datab
+also datab-words definitions
+
+' .x 68 ptr-field db_credp
+' .x 60 ptr-field db_fthdr
+' .x 58 struct-field db_struioun
+' .x 50 ext-field db_cksumstuff
+' .x 48 ext-field db_cksumend
+' .x 40 ext-field db_cksumstart
+' .x 38 ptr-field db_lastfree
+' .x 30 ptr-field db_free
+' .x 28 ptr-field db_mblk
+' .x 20 ptr-field db_cache
+' .x 1c long-field db_cpid
+' .x 1b byte-field db_struioflag
+' .x 1a byte-field db_flags
+' .x 19 byte-field db_type
+' .x 18 byte-field db_ref
+' .x 10 ptr-field db_lim
+' .x 8 ptr-field db_base
+' .x 0 ptr-field db_frtnp
+
+kdbg-words definitions
+previous
+
+\ end datab section
+
+
+vocabulary qband-words
+h# 40 constant qband-sz
+40 ' qband-words c-struct .qband
+also qband-words definitions
+
+' .x 38 ext-field qb_mblkcnt
+' .x 30 long-field qb_flag
+' .x 28 ext-field qb_lowat
+' .x 20 ext-field qb_hiwat
+' .x 18 ptr-field qb_last
+' .x 10 ptr-field qb_first
+' .x 8 ext-field qb_count
+' .x 0 ptr-field qb_next
+
+kdbg-words definitions
+previous
+
+\ end qband section
+
+
+vocabulary iocblk-words
+h# 28 constant iocblk-sz
+28 ' iocblk-words c-struct .iocblk
+also iocblk-words definitions
+
+' .x 24 long-field ioc_error
+' .x 20 long-field ioc_rval
+' .x 18 ext-field ioc_count
+' .x 14 long-field ioc_flag
+' .x 10 long-field ioc_id
+' .x 8 ptr-field ioc_cr
+' .x 0 long-field ioc_cmd
+
+kdbg-words definitions
+previous
+
+\ end iocblk section
+
+
+vocabulary copyreq-words
+h# 30 constant copyreq-sz
+30 ' copyreq-words c-struct .copyreq
+also copyreq-words definitions
+
+' .x 28 ext-field cq_size
+' .x 20 ptr-field cq_addr
+' .x 18 ptr-field cq_private
+' .x 14 long-field cq_flag
+' .x 10 long-field cq_id
+' .x 8 ptr-field cq_cr
+' .x 0 long-field cq_cmd
+
+kdbg-words definitions
+previous
+
+\ end copyreq section
+
+
+vocabulary copyresp-words
+h# 28 constant copyresp-sz
+28 ' copyresp-words c-struct .copyresp
+also copyresp-words definitions
+
+' .x 20 ptr-field cp_rval
+' .x 18 ptr-field cp_private
+' .x 14 long-field cp_flag
+' .x 10 long-field cp_id
+' .x 8 ptr-field cp_cr
+' .x 0 long-field cp_cmd
+
+kdbg-words definitions
+previous
+
+\ end copyresp section
+
+
+vocabulary ioctypes-words
+h# 30 constant ioctypes-sz
+30 ' ioctypes-words c-struct .ioctypes
+also ioctypes-words definitions
+
+' .x 0 struct-field iocblk
+' .x 0 struct-field copyreq
+' .x 0 struct-field copyresp
+
+kdbg-words definitions
+previous
+
+\ end ioctypes section
+
+
+: .stream-list ( stream -- )
+   [ also stdata-words ]
+   [ also queue-words ]
+   [ also qinit-words ]
+   sd_wrq		       ( queue )
+   begin  ?dup  while          ( queue )
+      dup .queue cr	       ( queue )
+      dup q_qinfo .qinit cr    ( queue )
+      cr
+      q_next		       ( queue' )
+   repeat                      ( )
+   [ previous ]
+   [ previous ]
+   [ previous ]
+;
+
+: .msgbuf
+   [ also queue-words ]
+   log_recentq p@ q_first        ( msgb0 )      \ msgb0 = log_recentq->q_first
+   [ previous ]
+   [ also msgb-words ]
+   begin
+      dup                       ( msgb msgb )
+   while                        ( msgb )
+      dup b_cont                ( msgb msgb->b_cont )
+      dup b_rptr swap b_wptr    ( msgb b_cont->b_rptr b_cont->b_wptr )
+      over - lf-type            ( msgb )
+      b_next                    ( msgb' )     \ msgb' = msgb->b_next
+   repeat                       ( msgb' )
+   [ previous ]
+   drop cr                      ( )
+;
+
+
+vocabulary ipc_service-words
+h# 98 constant ipc_service-sz
+98 ' ipc_service-words c-struct .ipc_service
+also ipc_service-words definitions
+
+' .x 90 long-field ipcs_atype
+' .x 70 struct-field ipcs_usedids
+' .x 68 ptr-field ipcs_rmid
+' .x 60 ptr-field ipcs_dtor
+' .x 58 ext-field ipcs_ssize
+' .x 50 ptr-field ipcs_ids
+' .x 48 ext-field ipcs_rctlofs
+' .x 44 long-field ipcs_zone_rctl
+' .x 40 long-field ipcs_proj_rctl
+' .x 3c long-field ipcs_count
+' .x 38 long-field ipcs_tabsz
+' .x 30 ptr-field ipcs_table
+' .x 8 struct-field ipcs_keys
+' .x 0 struct-field ipcs_lock
+
+kdbg-words definitions
+previous
+
+\ end ipc_service section
+
+
+vocabulary kipc_perm-words
+h# 70 constant kipc_perm-sz
+70 ' kipc_perm-words c-struct .kipc_perm
+also kipc_perm-words definitions
+
+' .x 58 struct-field ipc_zone_ref
+' .x 54 long-field ipc_zoneid
+' .x 50 long-field ipc_id
+' .x 48 ptr-field ipc_proj
+' .x 40 long-field ipc_key
+' .x 3c long-field ipc_mode
+' .x 38 long-field ipc_cgid
+' .x 34 long-field ipc_cuid
+' .x 30 long-field ipc_gid
+' .x 2c long-field ipc_uid
+' .x 28 long-field ipc_ref
+' .x 18 struct-field ipc_list
+' .x 0 struct-field ipc_avl
+
+kdbg-words definitions
+previous
+
+\ end kipc_perm section
+
+
+vocabulary kshmid-words
+h# d8 constant kshmid-sz
+d8 ' kshmid-words c-struct .kshmid
+also kshmid-words definitions
+
+' .x d0 ext-field shm_sptprot
+' .x c8 ptr-field shm_sptseg
+' .x c0 ptr-field shm_sptinfo
+' .x b8 ext-field shm_ctime
+' .x b0 ext-field shm_dtime
+' .x a8 ext-field shm_atime
+' .x a0 ext-field shm_ismattch
+' .x 9c long-field shm_cpid
+' .x 98 long-field shm_lpid
+' .x 90 struct-field shm_mlock
+' .x 88 ext-field shm_lkpages
+' .x 80 short-field shm_lkcnt
+' .x 78 ptr-field shm_amp
+' .x 70 ext-field shm_segsz
+' .x 0 struct-field shm_perm
+
+kdbg-words definitions
+previous
+
+\ end kshmid section
+
+
+vocabulary ksemid-words
+h# b8 constant ksemid-sz
+b8 ' ksemid-words c-struct .ksemid
+also ksemid-words definitions
+
+' .x 98 struct-field sem_undos
+' .x 94 long-field sem_maxops
+' .x 90 long-field sem_binary
+' .x 88 ext-field sem_ctime
+' .x 80 ext-field sem_otime
+' .x 78 short-field sem_nsems
+' .x 70 ptr-field sem_base
+' .x 0 struct-field sem_perm
+
+kdbg-words definitions
+previous
+
+\ end ksemid section
+
+
+vocabulary kmsqid-words
+h# 1188 constant kmsqid-sz
+1188 ' kmsqid-words c-struct .kmsqid
+also kmsqid-words definitions
+
+' .x 1184 byte-field msg_neg_copy
+' .x 1180 long-field msg_ngt_cnt
+' .x 1178 ext-field msg_snd_smallest
+' .x 1158 struct-field msg_wait_rcv
+' noop ' .x 820 20 938 array-field msg_wait_snd_ngt
+' noop ' .x 820 20 118 array-field msg_wait_snd
+' .x f8 struct-field msg_cpy_block
+' .x f0 struct-field msg_snd_cv
+' .x e8 ptr-field msg_fnd_rdr
+' .x e0 ptr-field msg_fnd_sndr
+' .x d8 ext-field msg_lowest_type
+' .x d4 long-field msg_rcv_cnt
+' .x d0 long-field msg_snd_cnt
+' .x c8 ext-field msg_ctime
+' .x c0 ext-field msg_rtime
+' .x b8 ext-field msg_stime
+' .x b4 long-field msg_lrpid
+' .x b0 long-field msg_lspid
+' .x a8 ext-field msg_qbytes
+' .x a0 ext-field msg_qmax
+' .x 98 ext-field msg_qnum
+' .x 90 ext-field msg_cbytes
+' .x 70 struct-field msg_list
+' .x 0 struct-field msg_perm
+
+kdbg-words definitions
+previous
+
+\ end kmsqid section
+
+
+vocabulary dirent64-words
+h# 18 constant dirent64-sz
+18 ' dirent64-words c-struct .dirent64
+also dirent64-words definitions
+
+' c@ ' .x 1 1 12 array-field d_name
+' .x 10 short-field d_reclen
+' .x 8 ext-field d_off
+' .x 0 ext-field d_ino
+
+kdbg-words definitions
+previous
+
+\ end dirent64 section
+
+
+vocabulary dirent32-words
+h# c constant dirent32-sz
+c ' dirent32-words c-struct .dirent32
+also dirent32-words definitions
+
+' c@ ' .x 1 1 a array-field d_name
+' .x 8 short-field d_reclen
+' .x 4 long-field d_off
+' .x 0 long-field d_ino
+
+kdbg-words definitions
+previous
+
+\ end dirent32 section
+
+
+vocabulary dirent-words
+h# 18 constant dirent-sz
+18 ' dirent-words c-struct .dirent
+also dirent-words definitions
+
+' c@ ' .x 1 1 12 array-field d_name
+' .x 10 short-field d_reclen
+' .x 8 ext-field d_off
+' .x 0 ext-field d_ino
+
+kdbg-words definitions
+previous
+
+\ end dirent section
+
+
+vocabulary ufid-words
+h# c constant ufid-sz
+c ' ufid-words c-struct .ufid
+also ufid-words definitions
+
+' .x 8 long-field ufid_gen
+' .x 4 long-field ufid_ino
+' .x 2 short-field ufid_flags
+' .x 0 short-field ufid_len
+
+kdbg-words definitions
+previous
+
+\ end ufid section
+
+
+vocabulary mntinfo-words
+h# 248 constant mntinfo-sz
+248 ' mntinfo-words c-struct .mntinfo
+also mntinfo-words definitions
+
+' .x 240 struct-field mi_remap_lock
+' .x 230 struct-field mi_zone_node
+' .x 218 struct-field mi_zone_ref
+' .x 210 ptr-field mi_zone
+' .x 208 ptr-field mi_klmconfig
+' .x 200 ptr-field mi_ro_kstats
+' .x 1f8 ptr-field mi_io_kstats
+' .x 1f0 long-field mi_remap
+' .x 1ec long-field mi_failover
+' .x 1e8 long-field mi_noresponse
+' .x 1e0 ptr-field mi_acl_timer_type
+' .x 1d8 ptr-field mi_acl_ss_call_type
+' .x 1d0 ptr-field mi_acl_call_type
+' .x 1c8 ptr-field mi_aclreqs
+' .x 1c0 ptr-field mi_aclnames
+' .x 1b8 ext-field mi_printftime
+' .x 1b0 ptr-field mi_timer_type
+' .x 1a8 ptr-field mi_ss_call_type
+' .x 1a0 ptr-field mi_call_type
+' .x 198 ptr-field mi_reqs
+' .x 190 ptr-field mi_rfsnames
+' .x 18c long-field mi_vers
+' .x 188 long-field mi_prog
+' .x 180 ptr-field mi_pathconf
+' .x 178 struct-field mi_async_lock
+' noop ' .x 4 2 172 array-field mi_async_work_cv
+' .x 170 struct-field mi_async_cv
+' .x 168 ptr-field mi_manager_thread
+' .x 166 short-field mi_max_threads
+' w@ ' .x 4 2 162 array-field mi_threads
+' .x 160 struct-field mi_async_reqs_cv
+' .x 15c long-field mi_async_req_count
+' .x 158 long-field mi_async_init_clusters
+' l@ ' .x 18 4 140 array-field mi_async_clusters
+' x@ ' .x 10 8 130 array-field mi_async_curr
+' x@ ' .x 30 8 100 array-field mi_async_tail
+' x@ ' .x 30 8 d0 array-field mi_async_reqs
+' .x cc long-field mi_curwrite
+' .x c8 long-field mi_curread
+' noop ' .x 60 18 68 array-field mi_timers
+' .x 60 ext-field mi_maxfilesize
+' .x 58 ext-field mi_acdirmax
+' .x 50 ext-field mi_acdirmin
+' .x 48 ext-field mi_acregmax
+' .x 40 ext-field mi_acregmin
+' .x 3c long-field mi_retrans
+' .x 38 long-field mi_timeo
+' .x 34 long-field mi_stsize
+' .x 30 long-field mi_tsize
+' .x 2c long-field mi_flags
+' .d 28 long-field mi_type
+' .x 20 ptr-field mi_vfsp
+' .x 1c long-field mi_readers
+' .x 18 struct-field mi_failover_cv
+' .x 10 ptr-field mi_curr_serv
+' .x 8 ptr-field mi_servers
+' .x 0 struct-field mi_lock
+
+kdbg-words definitions
+previous
+
+\ end mntinfo section
+
+
+vocabulary failinfo-words
+h# 28 constant failinfo-sz
+28 ' failinfo-words c-struct .failinfo
+also failinfo-words definitions
+
+' .x 20 ptr-field xattrdirproc
+' .x 18 ptr-field lookupproc
+' .x 10 ptr-field copyproc
+' .x 8 ptr-field fhp
+' .x 0 ptr-field vp
+
+kdbg-words definitions
+previous
+
+\ end failinfo section
+
+
+vocabulary servinfo-words
+h# 98 constant servinfo-sz
+98 ' servinfo-words c-struct .servinfo
+also servinfo-words definitions
+
+' .x 90 struct-field sv_lock
+' .x 88 ptr-field sv_next
+' .x 84 long-field sv_flags
+' .x 80 long-field sv_hostnamelen
+' .x 78 ptr-field sv_hostname
+' .x 70 ptr-field sv_secdata
+' .x 20 struct-field sv_fhandle
+' .x 10 struct-field sv_addr
+' .x 8 ptr-field sv_origknconf
+' .x 0 ptr-field sv_knconf
+
+kdbg-words definitions
+previous
+
+\ end servinfo section
+
+
+vocabulary nfs_fid-words
+h# 24 constant nfs_fid-sz
+24 ' nfs_fid-words c-struct .nfs_fid
+also nfs_fid-words definitions
+
+' c@ ' .x 20 1 4 array-field nf_data
+' .x 2 short-field nf_pad
+' .x 0 short-field nf_len
+
+kdbg-words definitions
+previous
+
+\ end nfs_fid section
+
+
+vocabulary svcfh-words
+h# 20 constant svcfh-sz
+20 ' svcfh-words c-struct .svcfh
+also svcfh-words definitions
+
+' c@ ' .x a 1 16 array-field fh_xdata
+' .x 14 short-field fh_xlen
+' c@ ' .x a 1 a array-field fh_data
+' .x 8 short-field fh_len
+' .x 0 struct-field fh_fsid
+
+kdbg-words definitions
+previous
+
+\ end svcfh section
+
+
+vocabulary sess-words
+h# 40 constant sess-sz
+40 ' sess-words c-struct .sess
+also sess-words definitions
+
+' .x 38 ptr-field s_cred
+' .x 30 ptr-field s_vp
+' .x 28 ext-field s_dev
+' .x 24 struct-field s_cnt_cv
+' .x 20 long-field s_cnt
+' .x 1c struct-field s_exit_cv
+' .d 18 long-field s_exit
+' .d 14 long-field s_sighuped
+' .x 10 long-field s_ref
+' .x 8 struct-field s_lock
+' .x 0 ptr-field s_sidp
+
+kdbg-words definitions
+previous
+
+\ end sess section
+
+
+vocabulary snode-words
+h# 98 constant snode-sz
+98 ' snode-words c-struct .snode
+also snode-words definitions
+
+' .x 90 struct-field s_cv
+' .x 88 struct-field s_lock
+' .x 80 ext-field s_mapcnt
+' .x 78 long-field s_count
+' .x 70 ext-field s_ctime
+' .x 68 ext-field s_mtime
+' .x 60 ext-field s_atime
+' .x 58 ext-field s_fsid
+' .x 50 long-field s_flag
+' .x 48 ext-field s_size
+' .x 40 ptr-field s_plcy
+' .x 38 ptr-field s_list
+' .x 30 ext-field s_nextr
+' .x 28 ptr-field s_dip
+' .x 20 ext-field s_dev
+' .x 18 ptr-field s_commonvp
+' .x 10 ptr-field s_realvp
+' .x 8 ptr-field s_vnode
+' .x 0 ptr-field s_next
+
+kdbg-words definitions
+previous
+
+\ end snode section
+
+
+vocabulary fnnode-words
+h# f0 constant fnnode-sz
+f0 ' fnnode-words c-struct .fnnode
+also fnnode-words definitions
+
+' .x 68 ptr-field fn_trigger
+' .x 60 ptr-field fn_dirents
+' .x 58 ptr-field fn_next
+' .x 50 ptr-field fn_parent
+' .x 48 ptr-field fn_vnode
+' .d 44 long-field fn_size
+' .d 18 long-field fn_linkcnt
+' .str 0 ptr-field fn_name
+
+kdbg-words definitions
+previous
+
+\ end fnnode section
+
+
+vocabulary utsname-words
+h# 505 constant utsname-sz
+505 ' utsname-words c-struct .utsname
+also utsname-words definitions
+
+' c@ ' .x 101 1 404 array-field machine
+' c@ ' .x 101 1 303 array-field version
+' c@ ' .x 101 1 202 array-field release
+' c@ ' .x 101 1 101 array-field nodename
+' c@ ' .x 101 1 0 array-field sysname
+
+kdbg-words definitions
+previous
+
+\ end utsname section
+
+: utsname
+   [ also utsname-words ]
+   symbol utsname
+   dup sysname .str space
+   dup nodename .str space
+   dup release .str space
+   dup version .str space
+   machine .str cr
+   [ previous ]
+;
+
+vocabulary rlimit64-words
+h# 10 constant rlimit64-sz
+10 ' rlimit64-words c-struct .rlimit64
+also rlimit64-words definitions
+
+' .x 8 ext-field rlim_max
+' .x 0 ext-field rlim_cur
+
+kdbg-words definitions
+previous
+
+\ end rlimit64 section
+
+
+vocabulary rlimit32-words
+h# 8 constant rlimit32-sz
+8 ' rlimit32-words c-struct .rlimit32
+also rlimit32-words definitions
+
+' .x 4 long-field rlim_max
+' .x 0 long-field rlim_cur
+
+kdbg-words definitions
+previous
+
+\ end rlimit32 section
+
+
+vocabulary zone-words
+h# 2b0 constant zone-sz
+2b0 ' zone-words c-struct .zone
+also zone-words definitions
+
+' .x 2a8 ptr-field zone_nprocs_kstat
+' .x 2a0 ext-field zone_nprocs_ctl
+' .x 298 ext-field zone_nprocs
+' .x 290 ptr-field zone_fs_allowed
+' .x 288 ptr-field zone_pfexecd
+' .x 280 struct-field zone_mntfs_db_lock
+' .x 278 ptr-field zone_mntfs_db
+' .x 270 ptr-field zone_audit_kctxt
+' .x 268 ptr-field zone_cpucap
+' .x 260 ptr-field zone_netstack
+' .x 240 struct-field zone_dl_list
+' .x 238 ptr-field zone_lockedmem_kstat
+' .x 230 ptr-field zone_swapresv_kstat
+' .x 228 long-field zone_defaultcid
+' .x 220 ptr-field zone_brand_data
+' .x 218 ptr-field zone_brand
+' .d 210 long-field zone_restart_init
+' .x 1f8 struct-field zone_mlps
+' .x 1f0 long-field zone_match
+' .x 1e8 ptr-field zone_slabel
+' .x 1c8 struct-field zone_datasets
+' .x 1c0 long-field zone_ncpus_online
+' .x 1bc long-field zone_ncpus
+' .x 1b8 long-field zone_psetid
+' .x 1b0 ext-field zone_pool_mod
+' .x 1a8 ptr-field zone_pool
+' .x 1a0 ptr-field zone_kcred
+' .x 198 ext-field zone_uniqid
+' .x 190 ptr-field zone_vfslist
+' .x 188 ptr-field zone_privset
+' .x 180 ptr-field zone_kthreads
+' .x 178 ext-field zone_phys_mcap
+' .x 170 ptr-field zone_bootargs
+' .x 168 long-field zone_boot_err
+' .x 160 ptr-field zone_initname
+' .x 158 long-field zone_proc_initpid
+' .x 150 ptr-field zone_zsched
+' .x 148 struct-field zone_cv
+' .x 128 struct-field zone_zsd
+' .x 120 ext-field zone_max_lofi_ctl
+' .x 118 ext-field zone_max_lofi
+' .x 110 struct-field zone_rctl_lock
+' .x 108 ext-field zone_max_swap_ctl
+' .x 100 ext-field zone_max_swap
+' .x f8 ext-field zone_locked_mem_ctl
+' .x f0 ext-field zone_locked_mem
+' .x e8 struct-field zone_mem_lock
+' .x e0 ptr-field zone_rctls
+' .x dc long-field zone_shares
+' .x d8 long-field zone_rootpathlen
+' .x c0 struct-field zone_ipc
+' .x b8 ext-field zone_shmmax
+' .x b0 ext-field zone_nlwps_ctl
+' .x a8 ext-field zone_nlwps
+' .x a0 struct-field zone_nlwps_lock
+' .x 98 long-field zone_ntasks
+' .d 94 long-field zone_status
+' .x 90 short-field zone_flags
+' .x 88 ptr-field zone_rootpath
+' .x 80 ptr-field zone_rootvp
+' .x 60 struct-field zone_ref_list
+' l@ ' .x 1c 4 44 array-field zone_subsys_ref
+' .x 40 long-field zone_cred_ref
+' .x 3c long-field zone_ref
+' .x 38 long-field zone_id
+' .x 28 struct-field zone_linkage
+' .x 20 struct-field zone_lock
+' .x 18 long-field zone_hostid
+' .x 10 ptr-field zone_domain
+' .x 8 ptr-field zone_nodename
+' .x 0 ptr-field zone_name
+
+kdbg-words definitions
+previous
+
+\ end zone section
+
+
+vocabulary v_address-words
+h# 18 constant v_address-sz
+18 ' v_address-words c-struct .v_address
+also v_address-words definitions
+
+' .x 10 ptr-field v_priv
+' .x 8 ptr-field v_as
+' .x 0 ptr-field v_addr
+
+kdbg-words definitions
+previous
+
+\ end v_address section
+
+
+vocabulary pp_address-words
+h# 10 constant pp_address-sz
+10 ' pp_address-words c-struct .pp_address
+also pp_address-words definitions
+
+' .x 8 long-field pp_offset
+' .x 0 ptr-field pp_pp
+
+kdbg-words definitions
+previous
+
+\ end pp_address section
+
+
+vocabulary phy_address-words
+h# 10 constant phy_address-sz
+10 ' phy_address-words c-struct .phy_address
+also phy_address-words definitions
+
+' .x 8 ext-field p_memtype
+' .x 0 ext-field p_addr
+
+kdbg-words definitions
+previous
+
+\ end phy_address section
+
+
+vocabulary ddi_dma_aobj_t-words
+h# 18 constant ddi_dma_aobj_t-sz
+18 ' ddi_dma_aobj_t-words c-struct .ddi_dma_aobj_t
+also ddi_dma_aobj_t-words definitions
+
+' .x 0 struct-field virt_obj
+' .x 0 struct-field pp_obj
+' .x 0 struct-field phys_obj
+' .x 0 struct-field dvma_obj
+
+kdbg-words definitions
+previous
+
+\ end ddi_dma_aobj_t section
+
+
+vocabulary ddi_dma_obj_t-words
+h# 20 constant ddi_dma_obj_t-sz
+20 ' ddi_dma_obj_t-words c-struct .ddi_dma_obj_t
+also ddi_dma_obj_t-words definitions
+
+' .x 8 struct-field dmao_obj
+' .d 4 long-field dmao_type
+' .x 0 long-field dmao_size
+
+kdbg-words definitions
+previous
+
+\ end ddi_dma_obj_t section
+
+
+vocabulary ddi_dma_lim-words
+h# 18 constant ddi_dma_lim-sz
+18 ' ddi_dma_lim-words c-struct .ddi_dma_lim
+also ddi_dma_lim-words definitions
+
+' .x 14 long-field dlim_dmaspeed
+' .x 10 long-field dlim_minxfer
+' .x c long-field dlim_burstsizes
+' .x 8 long-field dlim_cntr_max
+' .x 4 long-field dlim_addr_hi
+' .x 0 long-field dlim_addr_lo
+
+kdbg-words definitions
+previous
+
+\ end ddi_dma_lim section
+
+
+vocabulary ddi_dma_attr-words
+h# 50 constant ddi_dma_attr-sz
+50 ' ddi_dma_attr-words c-struct .ddi_dma_attr
+also ddi_dma_attr-words definitions
+
+' .x 48 long-field dma_attr_flags
+' .x 44 long-field dma_attr_granular
+' .x 40 long-field dma_attr_sgllen
+' .x 38 ext-field dma_attr_seg
+' .x 30 ext-field dma_attr_maxxfer
+' .x 2c long-field dma_attr_minxfer
+' .x 28 long-field dma_attr_burstsizes
+' .x 20 ext-field dma_attr_align
+' .x 18 ext-field dma_attr_count_max
+' .x 10 ext-field dma_attr_addr_hi
+' .x 8 ext-field dma_attr_addr_lo
+' .x 0 long-field dma_attr_version
+
+kdbg-words definitions
+previous
+
+\ end ddi_dma_attr section
+
+
+vocabulary ddi_dma_req-words
+h# 40 constant ddi_dma_req-sz
+40 ' ddi_dma_req-words c-struct .ddi_dma_req
+also ddi_dma_req-words definitions
+
+' .x 20 struct-field dmar_object
+' .x 18 ptr-field dmar_arg
+' .x 10 ptr-field dmar_fp
+' .x 8 long-field dmar_flags
+' .x 0 ptr-field dmar_limits
+
+kdbg-words definitions
+previous
+
+\ end ddi_dma_req section
+
+
+vocabulary ddi_dma_impl-words
+h# 118 constant ddi_dma_impl-sz
+118 ' ddi_dma_impl-words c-struct .ddi_dma_impl
+also ddi_dma_impl-words definitions
+
+' .x f0 struct-field dmai_error
+' .x e8 long-field dmai_fault
+' .x e0 ptr-field dmai_fault_notify
+' .x d8 ptr-field dmai_fault_check
+' .x d0 ptr-field dmai_cookie
+' .x 80 struct-field dmai_attr
+' .x 60 struct-field dmai_object
+' .x 58 ptr-field dmai_rdip
+' .x 50 ptr-field dmai_minfo
+' .x 48 ptr-field dmai_sbi
+' .x 40 ptr-field dmai_iopte
+' .x 38 ptr-field dmai_nexus_private
+' .x 34 long-field dmai_winsize
+' .x 30 long-field dmai_nwin
+' .x 2c long-field dmai_inuse
+' .x 28 long-field dmai_rflags
+' .x 24 long-field dmai_pool
+' .x 20 long-field dmai_ndvmapages
+' .x 1c long-field dmai_burstsizes
+' .x 18 long-field dmai_minxfer
+' .x 10 ext-field dmai_offset
+' .x 8 long-field dmai_size
+' .x 0 ext-field dmai_mapping
+
+kdbg-words definitions
+previous
+
+\ end ddi_dma_impl section
+
+
+vocabulary i_ddi_soft_state-words
+h# 28 constant i_ddi_soft_state-sz
+28 ' i_ddi_soft_state-words c-struct .i_ddi_soft_state
+also i_ddi_soft_state-words definitions
+
+' .x 20 ptr-field next
+' .x 18 ext-field n_items
+' .x 10 ext-field size
+' .x 8 struct-field lock
+' .x 0 ptr-field array
+
+kdbg-words definitions
+previous
+
+\ end i_ddi_soft_state section
+
+
+vocabulary intrspec-words
+h# 10 constant intrspec-sz
+10 ' intrspec-words c-struct .intrspec
+also intrspec-words definitions
+
+' .x 8 ptr-field intrspec_func
+' .x 4 long-field intrspec_vec
+' .x 0 long-field intrspec_pri
+
+kdbg-words definitions
+previous
+
+\ end intrspec section
+
+
+vocabulary ddi_acc_hdl-words
+h# 68 constant ddi_acc_hdl-sz
+68 ' ddi_acc_hdl-words c-struct .ddi_acc_hdl
+also ddi_acc_hdl-words definitions
+
+' .x 60 struct-field ah_acc
+' .x 58 ext-field ah_xfermodes
+' .x 50 long-field ah_pnum
+' .x 48 ext-field ah_pfn
+' .x 40 long-field ah_hat_flags
+' .x 38 ext-field ah_len
+' .x 30 ext-field ah_offset
+' .x 28 ptr-field ah_addr
+' .x 20 long-field ah_rnumber
+' .x 18 ptr-field ah_dip
+' .x 10 ptr-field ah_platform_private
+' .x 8 ptr-field ah_bus_private
+' .x 0 long-field ah_vers
+
+kdbg-words definitions
+previous
+
+\ end ddi_acc_hdl section
+
+
+vocabulary ddi_acc_impl-words
+h# 108 constant ddi_acc_impl-sz
+108 ' ddi_acc_impl-words c-struct .ddi_acc_impl
+also ddi_acc_impl-words definitions
+
+' .x 100 ptr-field ahi_err
+' .x f8 long-field ahi_fault
+' .x f0 ptr-field ahi_fault_notify
+' .x e8 ptr-field ahi_fault_check
+' .x e0 ptr-field ahi_rep_put64
+' .x d8 ptr-field ahi_rep_put32
+' .x d0 ptr-field ahi_rep_put16
+' .x c8 ptr-field ahi_rep_put8
+' .x c0 ptr-field ahi_rep_get64
+' .x b8 ptr-field ahi_rep_get32
+' .x b0 ptr-field ahi_rep_get16
+' .x a8 ptr-field ahi_rep_get8
+' .x a0 ptr-field ahi_put64
+' .x 98 ptr-field ahi_put32
+' .x 90 ptr-field ahi_put16
+' .x 88 ptr-field ahi_put8
+' .x 80 ptr-field ahi_get64
+' .x 78 ptr-field ahi_get32
+' .x 70 ptr-field ahi_get16
+' .x 68 ptr-field ahi_get8
+' .x 0 struct-field ahi_common
+
+kdbg-words definitions
+previous
+
+\ end ddi_acc_impl section
+
+
+vocabulary ddi_map_req_t-words
+h# 28 constant ddi_map_req_t-sz
+28 ' ddi_map_req_t-words c-struct .ddi_map_req_t
+also ddi_map_req_t-words definitions
+
+' .x 20 long-field map_vers
+' .x 18 ptr-field map_handlep
+' .x 14 long-field map_prot
+' .x 10 long-field map_flags
+' .x 8 struct-field map_obj
+' .d 4 long-field map_type
+' .d 0 long-field map_op
+
+kdbg-words definitions
+previous
+
+\ end ddi_map_req_t section
+
+
+vocabulary ddi_dma_cookie_t-words
+h# 18 constant ddi_dma_cookie_t-sz
+18 ' ddi_dma_cookie_t-words c-struct .ddi_dma_cookie_t
+also ddi_dma_cookie_t-words definitions
+
+' .x 10 long-field dmac_type
+' .x 8 ext-field dmac_size
+' .x 0 struct-field _dmu
+
+kdbg-words definitions
+previous
+
+\ end ddi_dma_cookie_t section
+
+
+vocabulary regs-words
+h# 98 constant regs-sz
+98 ' regs-words c-struct .regs
+also regs-words definitions
+
+' .x 90 long-field r_y
+' .x 88 ext-field r_npc
+' .x 80 ext-field r_pc
+' .x 78 ext-field r_o7
+' .x 70 ext-field r_o6
+' .x 68 ext-field r_o5
+' .x 60 ext-field r_o4
+' .x 58 ext-field r_o3
+' .x 50 ext-field r_o2
+' .x 48 ext-field r_o1
+' .x 40 ext-field r_o0
+' .x 38 ext-field r_g7
+' .x 30 ext-field r_g6
+' .x 28 ext-field r_g5
+' .x 20 ext-field r_g4
+' .x 18 ext-field r_g3
+' .x 10 ext-field r_g2
+' .x 8 ext-field r_g1
+' .x 0 ext-field r_tstate
+
+kdbg-words definitions
+previous
+
+\ end regs section
+
+
+vocabulary kfpu_t.fpu_fr-words
+h# 100 constant kfpu_t.fpu_fr-sz
+100 ' kfpu_t.fpu_fr-words c-struct .kfpu_t.fpu_fr
+also kfpu_t.fpu_fr-words definitions
+
+' x@ ' .x 100 8 0 array-field fpu_dregs
+
+kdbg-words definitions
+previous
+
+\ end kfpu_t.fpu_fr section
+
+
+vocabulary kfpu_t-words
+h# 120 constant kfpu_t-sz
+120 ' kfpu_t-words c-struct .kfpu_t
+also kfpu_t-words definitions
+
+' .x 11a byte-field fpu_en
+' .d 119 byte-field fpu_q_entrysize
+' .d 118 byte-field fpu_qcnt
+' .x 110 ptr-field fpu_q
+' .x 108 long-field fpu_fprs
+' .x 100 ext-field fpu_fsr
+' .kfpu_t.fpu_fr 0 struct-field fpu_fr
+
+kdbg-words definitions
+previous
+
+\ end kfpu_t section
+
+
+vocabulary ddi_intr_handle_impl_t-words
+h# 70 constant ddi_intr_handle_impl_t-sz
+70 ' ddi_intr_handle_impl_t-words c-struct .ddi_intr_handle_impl_t
+also ddi_intr_handle_impl_t-words definitions
+
+' .x 68 long-field ih_target
+' .x 60 ptr-field ih_scratch2
+' .x 58 long-field ih_scratch1
+' .x 50 ptr-field ih_private
+' .x 48 ptr-field ih_main
+' .x 44 long-field ih_dup_cnt
+' .x 40 long-field ih_flags
+' .x 38 ptr-field ih_cb_arg2
+' .x 30 ptr-field ih_cb_arg1
+' .x 28 ptr-field ih_cb_func
+' .x 20 struct-field ih_rwlock
+' .x 1c long-field ih_pri
+' .x 18 long-field ih_cap
+' .x 14 long-field ih_state
+' .x 10 short-field ih_ver
+' .x c long-field ih_vector
+' .x a short-field ih_inum
+' .x 8 short-field ih_type
+' .x 0 ptr-field ih_dip
+
+kdbg-words definitions
+previous
+
+\ end ddi_intr_handle_impl_t section
+
+
+vocabulary ddi_softint_hdl_impl_t-words
+h# 40 constant ddi_softint_hdl_impl_t-sz
+40 ' ddi_softint_hdl_impl_t-words c-struct .ddi_softint_hdl_impl_t
+also ddi_softint_hdl_impl_t-words definitions
+
+' .x 38 ptr-field ih_private
+' .x 30 ptr-field ih_cb_arg2
+' .x 28 ptr-field ih_cb_arg1
+' .x 20 ptr-field ih_cb_func
+' .x 18 ptr-field ih_pending
+' .x 10 struct-field ih_rwlock
+' .x 8 long-field ih_pri
+' .x 0 ptr-field ih_dip
+
+kdbg-words definitions
+previous
+
+\ end ddi_softint_hdl_impl_t section
+
+
+vocabulary devinfo_intr_t-words
+h# 30 constant devinfo_intr_t-sz
+30 ' devinfo_intr_t-words c-struct .devinfo_intr_t
+also devinfo_intr_t-words definitions
+
+' .x 28 ptr-field devi_irm_req_p
+' .x 20 ptr-field devi_intr_handle_p
+' .x 1c long-field devi_intr_curr_nenables
+' .x 18 long-field devi_intr_curr_nintrs
+' .x 14 long-field devi_intr_sup_nintrs
+' .x 10 long-field devi_intr_curr_type
+' .x 8 ptr-field devi_msix_p
+' .x 0 long-field devi_intr_sup_types
+
+kdbg-words definitions
+previous
+
+\ end devinfo_intr_t section
+
+
+vocabulary ddi_intr_msix_t-words
+h# 38 constant ddi_intr_msix_t-sz
+38 ' ddi_intr_msix_t-words c-struct .ddi_intr_msix_t
+also ddi_intr_msix_t-words definitions
+
+' .x 2c struct-field msix_dev_attr
+' .x 28 long-field msix_pba_offset
+' .x 20 ptr-field msix_pba_addr
+' .x 18 ptr-field msix_pba_hdl
+' .x 10 long-field msix_tbl_offset
+' .x 8 ptr-field msix_tbl_addr
+' .x 0 ptr-field msix_tbl_hdl
+
+kdbg-words definitions
+previous
+
+\ end ddi_intr_msix_t section
+
+ 
+code asm-search4  ( address size data -- )
+                  ( address' size' found-addr true | false )
+   sp  sc1  pop   \ size
+   sp  sc2  pop   \ addr
+   begin
+      sc1  test
+   0<>  while  nop
+      sc2  %g0  h# 14  sc3  lda
+      sc1  4           sc1  sub
+      sc2  4           sc2  add
+      tos  sc3              cmp
+      =  if
+         sc2  4    sc3  sub
+         sc2  sp        push
+         sc1  sp        push
+         sc3  sp        push
+         -1   tos       move
+         next
+      then
+   repeat  nop
+   0  tos  move
+c;
+         
+code asm-search8  ( address size data -- )
+                  ( address' size' found-addr true | false )
+   sp  sc1  pop   \ size
+   sp  sc2  pop   \ addr
+   begin
+      sc1  test
+   0<>  while  nop
+      sc2  %g0  h# 14  sc3  ldxa
+      sc1  8           sc1  sub
+      sc2  8           sc2  add
+      tos  sc3              cmp
+      =  if
+         sc2  8    sc3  sub
+         sc2  sp        push
+         sc1  sp        push
+         sc3  sp        push
+         -1   tos       move
+         next
+      then
+   repeat  nop
+   0  tos  move
+c;
+   
+: phys-search  ( address size data acf -- )
+   2>r  begin                 ( address size  r: data acf )
+      2r@ execute  if         ( address size found-addr  r: data acf )
+         2r@ drop .x          ( address size found-addr  r: data acf )
+         ." found at " .x cr  ( address size  r: data acf )
+         false                ( address size done?  r: data acf )
+      else                    (  r: data acf )
+         true                 ( done?  r: data acf )
+      then
+   until  2r> 2drop
+;
+
+: type>acf  ( type -- acf )
+   case
+      4  of  ['] asm-search4  endof
+      8  of  ['] asm-search8  endof
+      ." no search by " .x cr  true throw
+   endcase
+;
+
+: memlist-search ( data type memlist -- )
+   [ also memlist-words ]
+   -rot  type>acf  2>r               ( memlist  r: data acf )
+   begin  ?dup  while                ( memlist  r: data acf )
+      dup ml_address over ml_size    ( memlist ml_address ml_size  r: data acf )
+      2r@ phys-search  ml_next       ( ml_next  r: data acf )
+   repeat  2r> 2drop
+   [ previous ]
+;
+
+: avail-search
+   symbol phys_avail p@  memlist-search
+;
+
+: install-search
+   symbol phys_install p@  memlist-search
+;
+
+
+vocabulary intr_vec-words
+h# 40 constant intr_vec-sz
+40 ' intr_vec-words c-struct .intr_vec
+also intr_vec-words definitions
+
+' .x 38 ptr-field iv_pil_next
+' .x 30 ptr-field iv_vec_next
+' .x 28 ptr-field iv_payload_buf
+' .x 20 ptr-field iv_arg2
+' .x 18 ptr-field iv_arg1
+' .addr>sym 10 ptr-field iv_handler
+' c@ ' .x a 1 6 array-field iv_pad
+' .d 4 short-field iv_flags
+' .d 2 short-field iv_pil
+' .d 0 short-field iv_inum
+
+kdbg-words definitions
+previous
+
+\ end intr_vec section
+
+
+vocabulary intr_vecx-words
+h# 1038 constant intr_vecx-sz
+1038 ' intr_vecx-words c-struct .intr_vecx
+also intr_vecx-words definitions
+
+' x@ ' .x ff8 8 40 array-field iv_pil_xnext
+' .intr_vec 0 struct-field iv_vec
+
+kdbg-words definitions
+previous
+
+\ end intr_vecx section
+
+
+vocabulary machcpu-words
+h# 9a8 constant machcpu-sz
+9a8 ' machcpu-words c-struct .machcpu
+also machcpu-words definitions
+
+' .x 968 ptr-field mondo_data
+' .x 920 ext-field dev_q_size
+' .x 918 ext-field dev_q_base_pa
+' .x 910 ext-field cpu_q_size
+' .x 908 ext-field cpu_q_base_pa
+' .x 900 ptr-field dev_q_va
+' .x 8f8 ptr-field cpu_q_va
+' .x 878 struct-field kwbuf
+' .x 870 ptr-field kwbuf_sp
+' .d 868 long-field kwbuf_full
+' noop ' .x 100 10 768 array-field intrstat
+' x@ ' .x 28 8 740 array-field pil_high_start
+' .x 1e0 struct-field ptl1_state
+' .x 1c8 ptr-field cpu_private
+' x@ ' .x 80 8 140 array-field intr_tail
+' x@ ' .x 80 8 c0 array-field intr_head
+' .d 18 long-field tl1_hdlr
+' .d 14 long-field in_prom
+' .d 10 long-field mutex_ready
+' .x 0 ptr-field mpcb
+
+kdbg-words definitions
+previous
+
+\ end machcpu section
+
+
+vocabulary machpcb-words
+h# 3e8 constant machpcb-sz
+3e8 ' machpcb-words c-struct .machpcb
+also machpcb-words definitions
+
+' .x 3d0 ptr-field mpcb_thread
+' .x 3c0 long-field mpcb_flags
+' .x 2a8 ptr-field mpcb_fpu
+' .x 2a4 long-field mpcb_wstate
+' .d 2a0 long-field mpcb_wbcnt
+' x@ ' .x 40 8 150 array-field mpcb_spbuf
+' .x 148 ptr-field mpcb_wbuf
+' .regs b0 struct-field mpcb_regs
+
+kdbg-words definitions
+previous
+
+\ end machpcb section
+
+
+vocabulary TRAP_TRACE_CTL.d-words
+h# 38 constant TRAP_TRACE_CTL.d-sz
+38 ' TRAP_TRACE_CTL.d-words c-struct .TRAP_TRACE_CTL.d
+also TRAP_TRACE_CTL.d-words definitions
+
+' .x 30 long-field hlimit
+' .x 28 ext-field hpaddr_base
+' .x 20 ptr-field hvaddr_base
+' .x 1c byte-field asi
+' .x 18 long-field limit
+' .x 14 long-field offset
+' .x 10 long-field last_offset
+' .x 8 ext-field paddr_base
+' .x 0 ptr-field vaddr_base
+
+kdbg-words definitions
+previous
+
+\ end TRAP_TRACE_CTL.d section
+
+
+vocabulary TRAP_TRACE_CTL-words
+h# 40 constant TRAP_TRACE_CTL-sz
+40 ' TRAP_TRACE_CTL-words c-struct .TRAP_TRACE_CTL
+also TRAP_TRACE_CTL-words definitions
+
+' .x 0 struct-field d
+' c@ ' .x 40 1 0 array-field cache_linesize
+
+kdbg-words definitions
+previous
+
+\ end TRAP_TRACE_CTL section
+
+
+vocabulary trap_trace_record-words
+h# 50 constant trap_trace_record-sz
+50 ' trap_trace_record-words c-struct .trap_trace_record
+also trap_trace_record-words definitions
+
+' .x 48 ext-field tt_f4
+' .x 40 ext-field tt_f3
+' .x 38 ext-field tt_f2
+' .x 30 ext-field tt_f1
+' .x 28 ext-field tt_tr
+' .x 20 ext-field tt_sp
+' .x 18 ext-field tt_tick
+' .x 10 ext-field tt_tstate
+' .x 8 ext-field tt_tpc
+' .x 2 short-field tt_tt
+' .x 1 byte-field tt_gl
+' .x 0 byte-field tt_tl
+
+kdbg-words definitions
+previous
+
+\ end trap_trace_record section
+
+
+alias .ttc .TRAP_TRACE_CTL.d
+
+: cpu-ttc ( n -- )
+   8 to-column ." cpuid = " dup .x cr                    ( n )
+   ['] .TRAP_TRACE_CTL sizeof  * symbol trap_trace_ctl + ( trace-hdr )
+   [ also TRAP_TRACE_CTL.d-words ]
+   ." vaddr_base = " dup vaddr_base .x cr
+   ." paddr_base = " dup paddr_base .x cr
+   ." last_offset = " dup last_offset .x cr
+   ." offset = " dup offset .x cr
+   ." limit = " dup limit .x cr
+   ." asi = " asi .x cr
+   [ previous ]
+;
+
+: .sttr-hdr ( n -- n )
+   ." cpuid = " dup .x cr
+   6 to-column ." tick"
+   d# 18 to-column ." type"
+   d# 24 to-column ." tl"
+   d# 29 to-column ." gl"
+   d# 34 to-column ." trap PC" cr
+;
+
+: .sttr ( ptr -- )
+   [ also trap_trace_record-words ]
+   dup tt_tick .x
+   d# 18 to-column dup tt_tt .x
+   d# 24 to-column dup tt_tl .x
+   d# 29 to-column dup tt_gl .x
+   d# 34 to-column tt_tpc .addr>sym cr
+   [ previous ]
+;
+
+: .lttr-hdr ( n -- n )
+   8 to-column ." cpuid = " dup .x cr
+;
+
+: .lttr ( ptr -- )
+   [ also trap_trace_record-words ]
+   ." tick = " dup tt_tick .x cr
+   ." trap type = " dup tt_tt .x cr
+   ." global level = " dup tt_gl .x cr
+   ." trap level = " dup tt_tl .x cr
+   ." trap pc = " dup tt_tpc .addr>sym cr
+   ." tstate = " dup tt_tstate .x cr
+   ." trap sp = " dup tt_sp .x cr
+   ." trap tr = " dup tt_tr .x cr
+   ." trap f1 = " dup tt_f1 .x cr
+   ." trap f2 = " dup tt_f2 .x cr
+   ." trap f3 = " dup tt_f3 .x cr
+   ." trap f4 = " tt_f4 .x cr cr
+   [ previous ]
+;
+
+' .trap_trace_record sizeof negate constant ttr-decr
+
+: ttr-loop ( print-acf screen-acf end start -- )
+   do                          ( p-acf s-acf )
+      2dup i swap execute  if  ( p-acf s-acf p-acf addr )
+	 swap execute          ( p-acf s-acf )
+         exit? throw           ( p-acf s-acf )
+      else                     ( p-acf s-acf p-acf addr )
+	 2drop                 ( p-acf s-acf )
+      then                     ( p-acf s-acf )
+   ttr-decr  +loop             ( p-acf s-acf )
+   2drop                       ( )
+;
+
+
+: ttr-bounds1 ( trace-hdr -- vaddr_base vaddr_base+last_offset )
+   [ also TRAP_TRACE_CTL.d-words ]
+   dup vaddr_base swap last_offset over +
+   [ previous ]
+;
+
+: ttr-bounds2 ( trace-hdr -- vaddr_base+offset vaddr_base+limit )
+   [ also TRAP_TRACE_CTL.d-words ]
+   dup vaddr_base over offset bounds   ( hdr v+o v )
+   rot limit +                         ( v+o v+l )
+   [ previous ]
+;
+
+: do-ttr ( n print-acf screen-acf -- )
+   rot ['] .TRAP_TRACE_CTL sizeof * symbol trap_trace_ctl + 
+                                        ( p-acf s-acf trace-hdr )
+   3dup ttr-bounds1 ttr-loop            ( p-acf s-acf trace-hdr )
+   ttr-bounds2 ttr-loop                 ( )
+;
+
+: cpu-ttr ( n -- )
+   .sttr-hdr ['] .sttr ['] true do-ttr
+;
+   
+: cpu-xttr ( n -- )
+   .lttr-hdr ['] .lttr ['] true do-ttr
+;
+
+
+
+0 value sift-pc-start
+0 value sift-pc-end
+
+: set-sift-pc  ( base len -- )
+   over to sift-pc-start
+   + to sift-pc-end
+;
+
+: pc-in-range?  ( p -- p flag )
+   [ also trap_trace_record-words ]
+   dup tt_tpc  sift-pc-start sift-pc-end  within
+   [ previous ]
+;
+
+: cpu-ttr-pc  ( n -- )
+   .sttr-hdr ['] .sttr ['] pc-in-range? do-ttr
+;
+
+: cpu-xttr-pc  ( n -- )
+   .lttr-hdr ['] .lttr ['] pc-in-range? do-ttr
+;
+
+0 value sift-tt
+
+: same-tt?  ( p -- p flag )
+   [ also trap_trace_record-words ]
+   dup tt_tt  sift-tt  =
+   [ previous ]
+;
+
+: cpu-ttr-tt  ( n -- )
+   .sttr-hdr ['] .sttr ['] same-tt? do-ttr
+;
+
+: cpu-xttr-tt  ( n -- )
+   .lttr-hdr ['] .lttr ['] same-tt? do-ttr
+;
+
+: ncpu-acf ( acf -- )
+   symbol cpu symbol _ncpu l@ 0  do   ( acf cpu )
+      dup i ptrsize * + p@ 0<>  if          ( acf cpu )
+	 over i swap execute cr       ( acf cpu )
+      then                            ( acf cpu )
+   loop                               ( acf cpu )
+   2drop                              ( )
+;
+
+: ncpu-ttr ( -- ) ['] cpu-ttr ncpu-acf ;
+: ncpu-xttr ( -- ) ['] cpu-xttr ncpu-acf ;
+: ncpu-ttc ( -- ) ['] cpu-ttc ncpu-acf ;
+
+
+vocabulary htrap_trace_record-words
+h# 40 constant htrap_trace_record-sz
+40 ' htrap_trace_record-words c-struct .htrap_trace_record
+also htrap_trace_record-words definitions
+
+' .x 38 ext-field tt_f4
+' .x 30 ext-field tt_f3
+' .x 28 ext-field tt_f2
+' .x 20 ext-field tt_f1
+' .x 18 ext-field tt_tpc
+' .x 10 ext-field tt_tick
+' .x 8 ext-field tt_tstate
+' .x 6 short-field tt_tag
+' .x 4 short-field tt_tt
+' .x 3 byte-field tt_gl
+' .x 2 byte-field tt_tl
+' .x 1 byte-field tt_hpstate
+' .x 0 byte-field tt_ty
+
+kdbg-words definitions
+previous
+
+\ end htrap_trace_record section
+
+
+vocabulary htrap_trace_hdr-words
+h# 40 constant htrap_trace_hdr-sz
+40 ' htrap_trace_hdr-words c-struct .htrap_trace_hdr
+also htrap_trace_hdr-words definitions
+
+' .x 38 ext-field dummy6
+' .x 30 ext-field dummy5
+' .x 28 ext-field dummy4
+' .x 20 ext-field dummy3
+' .x 18 ext-field dummy2
+' .x 10 ext-field dummy1
+' .x 8 ext-field offset
+' .x 0 ext-field last_offset
+
+kdbg-words definitions
+previous
+
+\ end htrap_trace_hdr section
+
+
+alias .ttc .TRAP_TRACE_CTL.d
+
+: cpu-httc ( n -- )
+   8 to-column ." cpuid = " dup .x cr                    ( n )
+   ['] .TRAP_TRACE_CTL sizeof  * symbol trap_trace_ctl + ( trace-hdr )
+   [ also TRAP_TRACE_CTL.d-words ]
+   ." vaddr_base = " dup hvaddr_base .x cr
+   ." paddr_base = " dup hpaddr_base .x cr
+   ." last_offset = " dup hvaddr_base @ .x cr
+   ." offset = " dup hvaddr_base /x + @ .x cr
+   ." limit = " hlimit .x cr
+   [ previous ]
+;
+
+: .shttr-hdr ( n -- n )
+   ." cpuid = " dup .x cr
+   6 to-column ." tick"
+   d# 18 to-column ." type"
+   d# 23 to-column ." tag"
+   d# 29 to-column ." tt"
+   d# 35 to-column ." tl"
+   d# 40 to-column ." gl"
+   d# 45 to-column ." trap PC" cr
+;
+
+: .shttr ( ptr -- )
+   [ also htrap_trace_record-words ]
+   dup tt_tick .x
+   d# 18 to-column dup tt_ty .x
+   d# 23 to-column dup tt_tag .x
+   d# 29 to-column dup tt_tt .x
+   d# 35 to-column dup tt_tl .x
+   d# 40 to-column dup tt_gl .x
+   d# 45 to-column tt_tpc .addr>sym cr
+   [ previous ]
+;
+
+: .lhttr-hdr ( n -- n )
+   8 to-column ." cpuid = " dup .x cr
+;
+
+: .lhttr ( ptr -- )
+   [ also htrap_trace_record-words ]
+   ." tick = " dup tt_tick .x cr
+   ." trap entry type = " dup tt_ty .x cr
+   ." hyper-privilege state = " dup tt_hpstate .x cr
+   ." trap type = " dup tt_tt .x cr
+   ." global level = " dup tt_gl .x cr
+   ." trap level = " dup tt_tl .x cr
+   ." extended trap indicator = " dup tt_tag .x cr
+   ." trap pc = " dup tt_tpc .addr>sym cr
+   ." tstate = " dup tt_tstate .x cr
+   ." trap f1 = " dup tt_f1 .x cr
+   ." trap f2 = " dup tt_f2 .x cr
+   ." trap f3 = " dup tt_f3 .x cr
+   ." trap f4 = " tt_f4 .x cr cr
+   [ previous ]
+;
+
+' .htrap_trace_record sizeof negate constant httr-decr
+
+: httr-loop ( print-acf screen-acf end start -- )
+   do                          ( p-acf s-acf )
+      2dup i swap execute  if  ( p-acf s-acf p-acf addr )
+	 swap execute          ( p-acf s-acf )
+         exit? throw           ( p-acf s-acf )
+      else                     ( p-acf s-acf p-acf addr )
+	 2drop                 ( p-acf s-acf )
+      then                     ( p-acf s-acf )
+   httr-decr  +loop            ( p-acf s-acf )
+   2drop                       ( )
+;
+
+
+: httr-bounds1 ( trace-hdr -- hvaddr_base+size hvaddr_base+last_offset )
+   [ also TRAP_TRACE_CTL.d-words ]
+   hvaddr_base dup @ over + swap		( v+lo v )
+   ['] .htrap_trace_hdr sizeof + swap		( v+s v+lo )
+   [ previous ]
+;
+
+: httr-bounds2 ( trace-hdr -- hvaddr_base+offset hvaddr_base+hlimit )
+   [ also TRAP_TRACE_CTL.d-words ]
+   dup hvaddr_base dup /x + @ over + swap	( hdr v+o v )
+   rot hlimit +					( v+o v+l )
+   [ previous ]
+;
+
+: do-httr ( n print-acf screen-acf -- )
+   rot ['] .TRAP_TRACE_CTL sizeof * symbol trap_trace_ctl + 
+                                        ( p-acf s-acf trace-hdr )
+   3dup httr-bounds1 httr-loop          ( p-acf s-acf trace-hdr )
+   httr-bounds2 httr-loop               ( )
+;
+
+: cpu-httr ( n -- )
+   .shttr-hdr ['] .shttr ['] true do-httr
+;
+   
+: cpu-xhttr ( n -- )
+   .lhttr-hdr ['] .lhttr ['] true do-httr
+;
+
+
+
+0 value sift-pc-start
+0 value sift-pc-end
+
+: set-sift-pc  ( base len -- )
+   over to sift-pc-start
+   + to sift-pc-end
+;
+
+: pc-in-range?  ( p -- p flag )
+   [ also htrap_trace_record-words ]
+   dup tt_tpc  sift-pc-start sift-pc-end  within
+   [ previous ]
+;
+
+: cpu-httr-pc  ( n -- )
+   .shttr-hdr ['] .shttr ['] pc-in-range? do-httr
+;
+
+: cpu-xhttr-pc  ( n -- )
+   .lhttr-hdr ['] .lhttr ['] pc-in-range? do-httr
+;
+
+0 value sift-tt
+
+: same-tt?  ( p -- p flag )
+   [ also htrap_trace_record-words ]
+   dup tt_tt  sift-tt  =
+   [ previous ]
+;
+
+: cpu-httr-tt  ( n -- )
+   .shttr-hdr ['] .shttr ['] same-tt? do-httr
+;
+
+: cpu-xhttr-tt  ( n -- )
+   .lhttr-hdr ['] .lhttr ['] same-tt? do-httr
+;
+
+: ncpu-acf ( acf -- )
+   symbol cpu symbol _ncpu l@ 0  do   ( acf cpu )
+      dup i ptrsize * + p@ 0<>  if          ( acf cpu )
+	 over i swap execute cr       ( acf cpu )
+      then                            ( acf cpu )
+   loop                               ( acf cpu )
+   2drop                              ( )
+;
+
+: ncpu-httr ( -- ) ['] cpu-httr ncpu-acf ;
+: ncpu-xhttr ( -- ) ['] cpu-xhttr ncpu-acf ;
+: ncpu-httc ( -- ) ['] cpu-httc ncpu-acf ;
+
+
+: .uintarray ( array-addr -- )
+   dup  if                       ( array-addr )
+      begin dup l@ ?dup  while   ( array-addr item )
+         .x la1+                 ( array-addr' )
+      repeat                     ( array-addr )
+   then                          ( array-addr )
+   drop
+;
+
+: clr_pagecol_stats
+	symbol sys_req_bins
+	200 4 *
+	0 fill
+	symbol sys_nak_bins
+	200 4 *
+	0 fill
+;
+
+h# 21 constant ASI_MMU_CTX
+h#  8 constant MMU_PCONTEXT
+h# 10 constant MMU_SCONTEXT
+
+
+vocabulary tte-words
+h# 8 constant tte-sz
+8 ' tte-words c-struct .tte
+also tte-words definitions
+
+' .x 0 7 4 bits-field sz
+' .x 4 10 4 bits-field wr_perm
+' .x 5 20 4 bits-field ref
+' .x 6 40 4 bits-field w
+' .x 7 80 4 bits-field x
+' .x 8 100 4 bits-field p
+' .x 9 200 4 bits-field cv
+' .x a 400 4 bits-field cp
+' .x b 800 4 bits-field e
+' .x c 1000 4 bits-field ie
+' .x d ffffe000 4 bits-field palo
+' .x 0 ffffff 0 bits-field pahi
+' .x 18 1000000 0 bits-field susp
+' .x 19 2000000 0 bits-field lock
+' .x 1a 4000000 0 bits-field no_sync
+' .x 1b 38000000 0 bits-field hmenum
+' .x 1e 40000000 0 bits-field nfo
+' .x 1f 80000000 0 bits-field v
+
+kdbg-words definitions
+previous
+
+\ end tte section
+
+
+vocabulary tsb_info-words
+h# 40 constant tsb_info-sz
+40 ' tsb_info-words c-struct .tsb_info
+also tsb_info-words definitions
+
+' .x 30 ptr-field tsb_cache
+' .x 28 ptr-field tsb_sfmmu
+' .tte 20 struct-field tsb_tte
+' .x 1c long-field tsb_ttesz_mask
+' .x 1a short-field tsb_flags
+' .d 18 short-field tsb_szc
+' .x 10 ptr-field tsb_next
+' .x 8 ext-field tsb_pa
+' .x 0 ptr-field tsb_va
+
+kdbg-words definitions
+previous
+
+\ end tsb_info section
+
+
+vocabulary hat.h_un-words
+h# 8 constant hat.h_un-sz
+8 ' hat.h_un-words c-struct .hat.h_un
+also hat.h_un-words definitions
+
+' .x 0 ptr-field sfmmu_iblkp
+
+kdbg-words definitions
+previous
+
+\ end hat.h_un section
+
+
+vocabulary sfmmu_ctx-words
+h# 8 constant sfmmu_ctx-sz
+8 ' sfmmu_ctx-words c-struct .sfmmu_ctx
+also sfmmu_ctx-words definitions
+
+' .x 6 short-field cnum
+' .x fffffff0 ffff0000 0 bits-field gnum
+
+kdbg-words definitions
+previous
+
+\ end sfmmu_ctx section
+
+
+vocabulary hat-words
+h# 258 constant hat-sz
+258 ' hat-words c-struct .hat
+also hat-words definitions
+
+' noop ' .sfmmu_ctx 8 8 250 array-field sfmmu_ctxs
+' c@ ' .x 6 1 145 array-field sfmmu_pgsz
+' .x 144 byte-field sfmmu_cext
+' .x 142 struct-field sfmmu_tsb_cv
+' .x 140 byte-field sfmmu_ctx_lock
+' .x 138 ext-field sfmmu_ismblkpa
+' .tsb_info 130 ptr-field sfmmu_tsb
+' .x 126 short-field sfmmu_flags
+' .x 124 short-field sfmmu_clrbin
+' .x 122 short-field sfmmu_clrstart
+' .x 121 byte-field sfmmu_rmstat
+' .x 1e 40000000 120 bits-field sfmmu_ismhat
+' .x 1f 80000000 120 bits-field sfmmu_free
+' .hat.h_un 118 struct-field h_un
+' x@ ' .d 30 8 b0 array-field sfmmu_ismttecnt
+' x@ ' .d 30 8 50 array-field sfmmu_ttecnt
+' .x 48 ptr-field sfmmu_as
+' .x 8 struct-field sfmmu_cpusran
+' .x 0 ptr-field sfmmu_xhat_provider
+
+kdbg-words definitions
+previous
+
+\ end hat section
+
+
+vocabulary hmehash_bucket-words
+h# 20 constant hmehash_bucket-sz
+20 ' hmehash_bucket-words c-struct .hmehash_bucket
+also hmehash_bucket-words definitions
+
+' .x 10 ptr-field hmeblkp
+' .x 8 ext-field hmeh_nextpa
+' .mutex 0 struct-field hmehash_mutex
+
+kdbg-words definitions
+previous
+
+\ end hmehash_bucket section
+
+
+vocabulary hmeblk_tag-words
+h# 10 constant hmeblk_tag-sz
+10 ' hmeblk_tag-words c-struct .hmeblk_tag
+also hmeblk_tag-words definitions
+
+' x@ ' .x 10 8 0 array-field htag_tag
+
+kdbg-words definitions
+previous
+
+\ end hmeblk_tag section
+
+
+vocabulary hme_blk.hblk_misc-words
+h# 4 constant hme_blk.hblk_misc-sz
+4 ' hme_blk.hblk_misc-words c-struct .hme_blk.hblk_misc
+also hme_blk.hblk_misc-words definitions
+
+' .x 0 7 0 bits-field ttesize
+' .x 3 8 0 bits-field nucleus_bit
+' .x 4 10 0 bits-field shadow_bit
+' .x 5 20 0 bits-field xhat_bit
+' .x 6 40 0 bits-field shared_bit
+' .x 7 ffffff80 0 bits-field notused
+
+kdbg-words definitions
+previous
+
+\ end hme_blk.hblk_misc section
+
+
+vocabulary hme_blk.hblk_un-words
+h# 4 constant hme_blk.hblk_un-sz
+4 ' hme_blk.hblk_un-words c-struct .hme_blk.hblk_un
+also hme_blk.hblk_un-words definitions
+
+' .x 0 struct-field hblk_counts
+' .x 0 long-field hblk_shadow_mask
+
+kdbg-words definitions
+previous
+
+\ end hme_blk.hblk_un section
+
+
+vocabulary hme_blk-words
+h# 58 constant hme_blk-sz
+58 ' hme_blk-words c-struct .hme_blk
+also hme_blk-words definitions
+
+' .hme_blk.hblk_un 30 struct-field hblk_un
+' .hme_blk.hblk_misc 2c struct-field hblk_misc
+' .d 28 long-field hblk_span
+' .x 20 ptr-field hblk_shadow
+' .x 18 ptr-field hblk_next
+' .hmeblk_tag 8 struct-field hblk_tag
+' .x 0 ext-field hblk_nextpa
+
+kdbg-words definitions
+previous
+
+\ end hme_blk section
+
+
+vocabulary sf_hment.sf_hment_un-words
+h# 8 constant sf_hment.sf_hment_un-sz
+8 ' sf_hment.sf_hment_un-words c-struct .sf_hment.sf_hment_un
+also sf_hment.sf_hment_un-words definitions
+
+' .x 0 ptr-field page
+
+kdbg-words definitions
+previous
+
+\ end sf_hment.sf_hment_un section
+
+
+vocabulary sf_hment-words
+h# 20 constant sf_hment-sz
+20 ' sf_hment-words c-struct .sf_hment
+also sf_hment-words definitions
+
+' .x 18 ptr-field hme_prev
+' .x 10 ptr-field hme_next
+' .sf_hment.sf_hment_un 8 struct-field sf_hment_un
+' .tte 0 struct-field hme_tte
+
+kdbg-words definitions
+previous
+
+\ end sf_hment section
+
+
+vocabulary sfmmu_global_stat-words
+h# f4 constant sfmmu_global_stat-sz
+f4 ' sfmmu_global_stat-words c-struct .sfmmu_global_stat
+also sfmmu_global_stat-words definitions
+
+' .d f0 long-field sf_destroy_scd
+' .d ec long-field sf_leave_scd
+' .d e8 long-field sf_join_scd
+' .d e4 long-field sf_create_scd
+' .d e0 long-field sf_region_remap_demap
+' .d dc long-field sf_tlb_reprog_pgsz
+' .d d8 long-field sf_ctx_inv
+' .d d4 long-field sf_user_vtop
+' .d d0 long-field sf_tsb_reloc
+' .d cc long-field sf_tsb_resize_failures
+' .d c8 long-field sf_tsb_shrink
+' .d c4 long-field sf_tsb_grow
+' .d c0 long-field sf_user_xcalls
+' .d bc long-field sf_kernel_xcalls
+' .d b8 long-field sf_pagesync_invalid
+' .d b0 long-field sf_pagesync
+' .d ac long-field sf_steal_count
+' .d a8 long-field sf_recache
+' .d a4 long-field sf_ism_recache
+' .d a0 long-field sf_ism_uncache
+' .d 9c long-field sf_unload_conflict
+' .d 98 long-field sf_uncache_conflict
+' .d 94 long-field sf_pgcolor_conflict
+' .d 90 long-field sf_put_free_fail
+' .d 8c long-field sf_put_free_success
+' .d 88 long-field sf_get_free_fail
+' .d 84 long-field sf_get_free_throttle
+' .d 80 long-field sf_get_free_success
+' .d 7c long-field sf_hblk_reserve_hit
+' .d 78 long-field sf_hblk_recurse_cnt
+' .d 74 long-field sf_hblk_reserve_cnt
+' .d 70 long-field sf_hblk_slab_cnt
+' .d 6c long-field sf_hblk1_nalloc
+' .d 68 long-field sf_hblk1_ncreate
+' .d 64 long-field sf_hblk8_nalloc
+' .d 60 long-field sf_hblk8_ncreate
+' .d 5c long-field sf_hblk_hit
+' .d 58 long-field sf_tsb_load4m
+' .d 54 long-field sf_tsb_load8k
+' .d 48 long-field sf_tteload4m
+' .d 44 long-field sf_tteload512k
+' .d 40 long-field sf_tteload64k
+' .d 3c long-field sf_tteload8k
+' .d 38 long-field sf_scd_2ndtsb_allocfail
+' .d 34 long-field sf_scd_1sttsb_allocfail
+' .d 30 long-field sf_scd_2ndtsb_alloc
+' .d 2c long-field sf_scd_1sttsb_alloc
+' .d 28 long-field sf_tsb_sectsb_create
+' .d 24 long-field sf_tsb_allocfail
+' .d 20 long-field sf_tsb_alloc
+' .d 1c long-field sf_swapout
+' .d 18 long-field sf_khash_links
+' .d 14 long-field sf_khash_searches
+' .d 10 long-field sf_uhash_links
+' .d c long-field sf_uhash_searches
+' .d 8 long-field sf_pagefaults
+' .d 4 long-field sf_tsb_raise_exception
+' .d 0 long-field sf_tsb_exceptions
+
+kdbg-words definitions
+previous
+
+\ end sfmmu_global_stat section
+
+
+vocabulary sfmmu_tsbsize_stat-words
+h# 40 constant sfmmu_tsbsize_stat-sz
+40 ' sfmmu_tsbsize_stat-words c-struct .sfmmu_tsbsize_stat
+also sfmmu_tsbsize_stat-words definitions
+
+' .d 24 long-field sf_tsbsz_4m
+' .d 20 long-field sf_tsbsz_2m
+' .d 1c long-field sf_tsbsz_1m
+' .d 18 long-field sf_tsbsz_512k
+' .d 14 long-field sf_tsbsz_256k
+' .d 10 long-field sf_tsbsz_128k
+' .d c long-field sf_tsbsz_64k
+' .d 8 long-field sf_tsbsz_32k
+' .d 4 long-field sf_tsbsz_16k
+' .d 0 long-field sf_tsbsz_8k
+
+kdbg-words definitions
+previous
+
+\ end sfmmu_tsbsize_stat section
+
+
+vocabulary memseg-words
+h# 70 constant memseg-sz
+70 ' memseg-words c-struct .memseg
+also memseg-words definitions
+
+' .x 68 long-field msegflags
+' .x 60 ext-field kpm_pagespa
+' .x 58 struct-field mseg_un
+' .x 50 ext-field kpm_nkpmpgs
+' .x 48 ext-field kpm_pbase
+' .x 40 ext-field nextpa
+' .x 38 ext-field epagespa
+' .x 30 ext-field pagespa
+' .x 28 ptr-field lnext
+' .x 20 ptr-field next
+' .x 18 ext-field pages_end
+' .x 10 ext-field pages_base
+' .x 8 ptr-field epages
+' .x 0 ptr-field pages
+
+kdbg-words definitions
+previous
+
+\ end memseg section
+
+
+vocabulary tsbmiss-words
+h# c0 constant tsbmiss-sz
+c0 ' tsbmiss-words c-struct .tsbmiss
+also tsbmiss-words definitions
+
+' c@ ' .x 30 1 90 array-field pad
+' x@ ' .x 8 8 88 array-field scd_shmermap
+' x@ ' .x 8 8 80 array-field shmermap
+' x@ ' .x 18 8 68 array-field scratch
+' .x 66 short-field kprot_traps
+' .x 64 short-field uprot_traps
+' .x 60 long-field ktsb_misses
+' .x 5c long-field utsb_misses
+' .x 5b byte-field uhat_rtteflags
+' .x 5a byte-field uhat_tteflags
+' .x 58 short-field dcache_line_mask
+' .x 54 long-field uhashsz
+' .x 50 long-field khashsz
+' .x 48 ptr-field uhashstart
+' .x 40 ptr-field khashstart
+' .x 38 ext-field ismblkpa
+' .x 30 ptr-field tsbscdptr4m
+' .x 28 ptr-field tsbscdptr
+' .x 20 ptr-field tsbptr4m
+' .x 18 ptr-field tsbptr
+' .x 10 ptr-field usrdp
+' .x 8 ptr-field usfmmup
+' .x 0 ptr-field ksfmmup
+
+kdbg-words definitions
+previous
+
+\ end tsbmiss section
+
+
+vocabulary ism_blk-words
+h# 110 constant ism_blk-sz
+110 ' ism_blk-words c-struct .ism_blk
+also ism_blk-words definitions
+
+' .x 108 ext-field iblk_nextpa
+' .x 100 ptr-field iblk_next
+' noop ' .x 100 20 0 array-field iblk_maps
+
+kdbg-words definitions
+previous
+
+\ end ism_blk section
+
+
+vocabulary ism_map-words
+h# 20 constant ism_map-sz
+20 ' ism_map-words c-struct .ism_map
+also ism_map-words definitions
+
+' .x 18 ptr-field imap_ment
+' .x 10 ptr-field imap_ismhat
+' .x c long-field imap_sz_mask
+' .x a short-field imap_hatflags
+' .x 9 byte-field imap_rid
+' .x 8 byte-field imap_vb_shift
+' .x 0 ext-field imap_seg
+
+kdbg-words definitions
+previous
+
+\ end ism_map section
+
+
+vocabulary ism_ment-words
+h# 20 constant ism_ment-sz
+20 ' ism_ment-words c-struct .ism_ment
+also ism_ment-words definitions
+
+' .x 18 ptr-field iment_prev
+' .x 10 ptr-field iment_next
+' .x 8 ptr-field iment_base_va
+' .x 0 ptr-field iment_hat
+
+kdbg-words definitions
+previous
+
+\ end ism_ment section
+
+
+( given a pfn will return the page structure )
+: pfn>page ( pfn -- page )
+   [ also page-words ]
+   [ also memseg-words ]
+   symbol memsegs p@                   ( n memseg )
+   begin  ?dup  while                  ( n memseg )
+      2dup                             ( n memseg n memseg )
+      dup pages_base swap pages_end    ( n memseg n base end )
+      within  if                       ( n memseg )
+         2dup pages_base -             ( n memseg noff )
+         ['] .page sizeof * swap       ( n poff memseg )
+         pages +  		       ( n page )
+	 nip exit		       ( page )
+      then                             ( n memseg )
+      next                             ( n memseg' )
+   repeat                              ( n )
+   drop 0 			       ( 0 )
+   [ previous ]
+   [ previous ]
+;
+
+( given a pfn will display page struct )
+: .page-n ( n -- )
+   dup pfn>page ?dup			( n page )
+   if
+      dup ." page " .x cr		( n page )
+      .page				( n )
+      drop
+   else
+      . ." not found "			( )
+   then
+;
+
+: .memseg-list ( -- )
+   [ also memseg-words ]
+   symbol memsegs p@        ( memseg )
+   begin  ?dup  while       ( memseg )
+      dup .memseg cr next   ( memseg' )
+   repeat
+   [ previous ]
+;
+
+: .memlist-list ( memlist -- )
+   [ also memlist-words ]
+   begin  ?dup  while           ( memlist )
+      dup .memlist cr ml_next   ( memlist' )
+   repeat                       ( )
+   [ previous ]
+;
+
+: .hmeb-shift ( sfmmu addr shift -- )
+   >> over xor swap                 ( hash sfmmu )
+   symbol ksfmmup p@ <>  if               ( hash )
+      symbol uhmehash_num l@ and    ( bucket )
+      ['] .hmehash_bucket sizeof *  ( index )
+      symbol uhme_hash p@ +         ( hmeb )
+   else                             ( hash )
+      symbol khmehash_num l@ and    ( bucket )
+      ['] .hmehash_bucket sizeof *  ( index )
+      symbol khme_hash p@ +         ( hmeb )
+   then                             ( hmeb )
+   ." hmeb " dup .x cr              ( hmeb )
+   .hmehash_bucket                  ( )
+;
+
+: .hmeb-8k ( sfmmup addr -- ) d# 16 .hmeb-shift ;
+
+alias .hmeb-64k .hmeb-8k
+
+: .hmeb-512k ( sfmmup addr -- ) d# 19 .hmeb-shift ;
+
+: .hmeb-4m ( sfmmup addr -- ) d# 22 .hmeb-shift ;
+
+: .hmeblk-list ( hmeblk -- )
+   [ also hme_blk-words ]
+   begin  ?dup  while             ( hmeblk )
+      dup .hme_blk cr hblk_next   ( hmeblk' )
+   repeat                         ( )
+   [ previous ]
+;
+
+: .pmap-list ( sfhme -- )
+   [ also sf_hment-words ]
+   begin  ?dup  while            ( sfhme )
+      dup .sf_hment cr hme_next  ( sfhme' )
+   repeat                        ( )
+   [ previous ]
+;
+
+: clr_mmustats ( -- )
+	[ also sfmmu_global_stat-words ]
+	[ also tsbmiss-words ]
+	symbol sfmmu_global_stat 
+	dup 0 to sf_tsb_exceptions
+	dup 0 to sf_tsb_raise_exception
+	dup 0 to sf_pagefaults
+	dup 0 to sf_uhash_searches
+	dup 0 to sf_uhash_links
+	dup 0 to sf_khash_searches
+	dup 0 to sf_khash_links
+	dup 0 to sf_swapout
+	dup 0 to sf_tsb_alloc
+	dup 0 to sf_tsb_allocfail
+	dup 0 to sf_tsb_sectsb_create
+	dup 0 to sf_scd_1sttsb_alloc
+	dup 0 to sf_scd_2ndtsb_alloc
+	dup 0 to sf_scd_1sttsb_allocfail
+	dup 0 to sf_scd_2ndtsb_allocfail
+	dup 0 to sf_tteload8k
+	dup 0 to sf_tteload64k
+	dup 0 to sf_tteload512k
+	dup 0 to sf_tteload4m
+	dup 0 to sf_tsb_load8k
+	dup 0 to sf_tsb_load4m
+	dup 0 to sf_hblk_hit
+	dup 0 to sf_hblk8_ncreate
+	dup 0 to sf_hblk8_nalloc
+	dup 0 to sf_hblk1_ncreate
+	dup 0 to sf_hblk1_nalloc
+	dup 0 to sf_hblk_slab_cnt
+	dup 0 to sf_hblk_reserve_cnt
+	dup 0 to sf_hblk_recurse_cnt
+	dup 0 to sf_hblk_reserve_hit
+	dup 0 to sf_get_free_success
+	dup 0 to sf_get_free_throttle
+	dup 0 to sf_get_free_fail
+	dup 0 to sf_put_free_success
+	dup 0 to sf_put_free_fail
+	dup 0 to sf_pgcolor_conflict
+	dup 0 to sf_uncache_conflict
+	dup 0 to sf_unload_conflict
+	dup 0 to sf_ism_uncache
+	dup 0 to sf_ism_recache
+	dup 0 to sf_recache
+	dup 0 to sf_steal_count
+	dup 0 to sf_pagesync
+	dup 0 to sf_pagesync_invalid
+	dup 0 to sf_kernel_xcalls
+	dup 0 to sf_user_xcalls
+	dup 0 to sf_tsb_grow
+	dup 0 to sf_tsb_shrink
+	dup 0 to sf_tsb_resize_failures
+	dup 0 to sf_tsb_reloc
+	dup 0 to sf_user_vtop
+	dup 0 to sf_ctx_inv
+	dup 0 to sf_tlb_reprog_pgsz
+	dup 0 to sf_region_remap_demap
+	dup 0 to sf_create_scd
+	dup 0 to sf_join_scd
+	dup 0 to sf_leave_scd
+	dup 0 to sf_destroy_scd
+	symbol tsbmiss_area
+	20 1 do
+		dup 0 to utsb_misses
+		dup 0 to ktsb_misses
+		dup 0 to uprot_traps
+		dup 0 to kprot_traps
+		['] .tsbmiss sizeof +
+	loop
+	[ previous ]
+	[ previous ]
+;
+
+0 value itlbmis_total
+0 value dtlbmis_total
+0 value utsbmis_total
+0 value ktsbmis_total
+0 value kprot_total
+0 value uprot_total
+0 value thisarea
+1 value hatstatcpu
+
+: prt_mmustats ( -- )
+	[ also sfmmu_global_stat-words ]
+	[ also tsbmiss-words ]
+	symbol sfmmu_global_stat .sfmmu_global_stat 
+	0 to itlbmis_total
+	0 to dtlbmis_total
+	0 to utsbmis_total
+	0 to ktsbmis_total
+	0 to uprot_total
+	0 to kprot_total
+	1 to hatstatcpu
+	symbol tsbmiss_area to thisarea
+	20 1 do i
+		symbol cpu_ready_set l@ hatstatcpu and
+		0 <> if 
+			thisarea utsb_misses thisarea uprot_traps - utsbmis_total + to utsbmis_total
+			thisarea ktsb_misses thisarea kprot_traps - ktsbmis_total + to ktsbmis_total
+			thisarea uprot_traps uprot_total + to uprot_total
+			thisarea kprot_traps kprot_total + to kprot_total
+		then
+		thisarea
+		['] .tsbmiss sizeof + to thisarea
+		hatstatcpu 1 lshift to hatstatcpu
+	loop
+	." inst tlb misses = " itlbmis_total .d cr
+	." data tlb misses = " dtlbmis_total .d cr
+	." u tsb misses = " utsbmis_total .d cr
+	." k tsb misses = " ktsbmis_total .d cr
+	." u prot misses = " uprot_total .d cr
+	." k prot misses = " kprot_total .d cr
+	[ previous ]
+	[ previous ]
+;
+
+
+: sctx@
+        MMU_SCONTEXT ASI_MMU_CTX spacex@
+;
+: pctx@
+        MMU_PCONTEXT ASI_MMU_CTX spacex@
+;
+ 
+: umap? ( uvaddr -- )
+        sctx@ unix-tte if               \ false | tte-data true
+          tte> drop             \ pa
+          ." pa = " . cr
+        else
+          ." no translation" cr
+        then
+;
+
+( given a page struct will display a list of hatid/va mappings )
+( Typical usage:  pfn pfn>page .page-mappings )
+: .page-mappings ( page -- )
+   [ also page-words ]
+   [ also hme_blk-words ]
+   [ also hat-words ]
+   [ also sf_hment-words ]
+   [ also tte-words ]
+
+   ?dup 0= if exit then				( page )
+   p_mapping					( sf_hment )
+   begin  ?dup  while
+      dup hme_tte hmenum			( sf_hment ttenum )
+      over sfmmu_hmetohblk call nip		( sf_hment ttenum hblk )
+      hblk_tag dup 8 + x@ swap			( sf_hment ttenum hatid tagp )
+      x@ h# 1fff invert and			( sf_hment ttenum hatid va )
+      rot 2000 * +				( sf_hment hatid va )
+      ." VA: " .x ."  HATID: " .x cr		( sf_hment )
+      hme_next					( 'sf_hment )
+   repeat
+
+   [ previous ]
+   [ previous ]
+   [ previous ]
+   [ previous ]
+   [ previous ]
+;
+
+vocabulary mem_node_conf-words
+h# 18 constant mem_node_conf-sz
+18 ' mem_node_conf-words c-struct .mem_node_conf
+also mem_node_conf-words definitions
+
+' .x 10 ext-field physmax
+' .x 8 ext-field physbase
+' .d 0 long-field exists
+
+kdbg-words definitions
+previous
+
+\ end mem_node_conf section
+
+
+vocabulary px-words
+h# 378 constant px-sz
+378 ' px-words c-struct .px
+also px-words definitions
+
+' .x 370 ptr-field px_dbg_hdl
+' .x 368 long-field px_dma_sync_opt
+' .x 360 ptr-field px_cprcb_id
+' .x 358 long-field px_pmetoack_ignored
+' .x 354 long-field px_pm_msiq_id
+' .x 350 long-field px_pm_flags
+' .x 34c long-field px_lup_pending
+' .x 348 struct-field px_l23ready_cv
+' .x 340 struct-field px_l23ready_lock
+' .x 338 long-field px_supp_intr_types
+' .x 330 ptr-field px_plat_p
+' .x 32c long-field px_dev_caps
+' .x 328 long-field px_pfd_idx
+' noop ' .x 1e0 60 148 array-field px_pfd_arr
+' .x 140 ptr-field px_fm_ibc
+' .x 138 ptr-field px_fm_mutex_owner
+' .x 130 struct-field px_fm_mutex
+' .x 128 long-field px_fm_cap
+' .x c8 struct-field px_cb_fault
+' .x 68 struct-field px_fault
+' .x 60 long-field px_inos_len
+' .x 58 ptr-field px_inos
+' .x 50 long-field px_ranges_length
+' .x 48 ptr-field px_ranges_p
+' .x 3c struct-field px_bus_range
+' .x 38 short-field px_bdf
+' .x 30 ptr-field px_mmu_p
+' .x 28 ptr-field px_pec_p
+' .x 20 ptr-field px_ib_p
+' .x 18 ext-field px_dev_hdl
+' .x 10 ptr-field px_dip
+' .x 8 struct-field px_mutex
+' .x 4 long-field px_soft_state
+' .d 0 long-field px_state
+
+kdbg-words definitions
+previous
+
+\ end px section
+
+
+vocabulary px_ib-words
+h# a8 constant px_ib-sz
+a8 ' px_ib-words c-struct .px_ib
+also px_ib-words definitions
+
+' .x 58 struct-field ib_msi_state
+' .x 20 struct-field ib_msiq_state
+' .x 18 struct-field ib_intr_lock
+' .x 10 struct-field ib_ino_lst_mutex
+' .x 8 ptr-field ib_ino_lst
+' .x 0 ptr-field ib_px_p
+
+kdbg-words definitions
+previous
+
+\ end px_ib section
+
+
+vocabulary px_pec-words
+h# a0 constant px_pec-sz
+a0 ' px_pec-words c-struct .px_pec
+also px_pec-words definitions
+
+' .x 98 long-field pec_fatal_msg_msiq_id
+' .x 94 long-field pec_non_fatal_msg_msiq_id
+' .x 90 long-field pec_corr_msg_msiq_id
+' .x 88 ptr-field pec_nameaddr_str
+' c@ ' .x 40 1 48 array-field pec_nameinst_str
+' .x 40 ptr-field pec_acc_hdl
+' .x 38 struct-field pec_pokefault_mutex
+' .x 30 long-field pec_safeacc_type
+' .x 28 ptr-field pec_ontrap_data
+' .x 20 ext-field pec_last64_pfn
+' .x 18 ext-field pec_base64_pfn
+' .x 10 ext-field pec_last32_pfn
+' .x 8 ext-field pec_base32_pfn
+' .x 0 ptr-field pec_px_p
+
+kdbg-words definitions
+previous
+
+\ end px_pec section
+
+
+vocabulary px_mmu-words
+h# 90 constant px_mmu-sz
+90 ' px_mmu-words c-struct .px_mmu
+also px_mmu-words definitions
+
+' .x 88 ptr-field dvma_active_list
+' .x 80 ptr-field dvma_free_rec
+' .x 78 ptr-field dvma_alloc_rec
+' .x 70 long-field dvma_active_count
+' .x 6c long-field dvma_free_rec_index
+' .x 68 long-field dvma_alloc_rec_index
+' .x 60 struct-field dvma_debug_lock
+' .x 58 long-field mmu_dvma_addr_scan_start
+' .x 50 ptr-field mmu_dvma_cache_locks
+' .x 48 ext-field mmu_dvma_reserve
+' .x 40 ext-field mmu_dvma_clid
+' .x 38 ptr-field mmu_dvma_map
+' .x 30 ext-field dvma_end_pg
+' .x 28 ext-field dvma_base_pg
+' .x 20 ext-field mmu_dvma_fast_end
+' .x 18 ext-field mmu_dvma_end
+' .x 10 ext-field mmu_dvma_base
+' .x 8 long-field mmu_inst
+' .x 0 ptr-field mmu_px_p
+
+kdbg-words definitions
+previous
+
+\ end px_mmu section
+
+
+vocabulary px_config_header-words
+h# 10 constant px_config_header-sz
+10 ' px_config_header-words c-struct .px_config_header
+also px_config_header-words definitions
+
+' .x e byte-field ch_header_type_reg
+' .x d byte-field ch_latency_timer_reg
+' .x c byte-field ch_cache_line_size_reg
+' .x b byte-field ch_base_class_reg
+' .x a byte-field ch_sub_class_reg
+' .x 9 byte-field ch_programming_if_code_reg
+' .x 8 byte-field ch_revision_id_reg
+' .x 6 short-field ch_status_reg
+' .x 4 short-field ch_command_reg
+' .x 2 short-field ch_device_id
+' .x 0 short-field ch_vendor_id
+
+kdbg-words definitions
+previous
+
+\ end px_config_header section
+
+
+vocabulary px_ino-words
+h# 60 constant px_ino-sz
+60 ' px_ino-words c-struct .px_ino
+also px_ino-words definitions
+
+' .x 58 short-field ino_ipil_cntr
+' .x 50 ptr-field ino_next_p
+' .x 48 ptr-field ino_ipil_p
+' .x 40 ptr-field ino_msiq_p
+' .x 38 short-field ino_claimed
+' .x 36 short-field ino_lopil
+' .x 34 short-field ino_ipil_size
+' .x 30 long-field ino_intr_weight
+' .x 2c long-field ino_default_cpuid
+' .x 28 long-field ino_cpuid
+' .x 20 ext-field ino_spurintr_begin
+' .x 18 long-field ino_unclaimed_intrs
+' .x 10 ptr-field ino_ib_p
+' .x 8 ext-field ino_sysino
+' .x 0 long-field ino_ino
+
+kdbg-words definitions
+previous
+
+\ end px_ino section
+
+
+vocabulary px_ino_pil-words
+h# 30 constant px_ino_pil-sz
+30 ' px_ino_pil-words c-struct .px_ino_pil
+also px_ino_pil-words definitions
+
+' .x 28 ptr-field ipil_next_p
+' .x 20 ptr-field ipil_ino_p
+' .x 18 ptr-field ipil_ih_start
+' .x 10 ptr-field ipil_ih_tail
+' .x 8 ptr-field ipil_ih_head
+' .x 2 short-field ipil_ih_size
+' .x 0 short-field ipil_pil
+
+kdbg-words definitions
+previous
+
+\ end px_ino_pil section
+
+
+vocabulary px_ih-words
+h# 68 constant px_ih-sz
+68 ' px_ih-words c-struct .px_ih
+also px_ih-words definitions
+
+' .x 60 ptr-field ih_ipil_p
+' .x 58 ptr-field ih_ksp
+' .x 50 ext-field ih_nsec
+' .x 48 ext-field ih_ticks
+' .x 40 ptr-field ih_next
+' .x 3c byte-field ih_intr_flags
+' .x 38 long-field ih_msg_code
+' .d 34 long-field ih_rec_type
+' .x 30 long-field ih_intr_state
+' .x 28 ptr-field ih_config_handle
+' .x 20 ptr-field ih_handler_arg2
+' .x 18 ptr-field ih_handler_arg1
+' .x 10 ptr-field ih_handler
+' .x 8 long-field ih_inum
+' .x 0 ptr-field ih_dip
+
+kdbg-words definitions
+previous
+
+\ end px_ih section
+
+
+vocabulary px_dvma_rec-words
+h# 20 constant px_dvma_rec-sz
+20 ' px_dvma_rec-words c-struct .px_dvma_rec
+also px_dvma_rec-words definitions
+
+' .x 18 ptr-field next
+' .x 10 ptr-field mp
+' .x 8 long-field len
+' .x 0 ptr-field dvma_addr
+
+kdbg-words definitions
+previous
+
+\ end px_dvma_rec section
+
+
+vocabulary px_dma_impl-words
+h# 140 constant px_dma_impl-sz
+140 ' px_dma_impl-words c-struct .px_dma_impl
+also px_dma_impl-words definitions
+
+' .x f0 struct-field dmai_attr_dev
+' .x e8 long-field dmai_fault
+' .x e0 ptr-field dmai_fault_notify
+' .x d8 ptr-field dmai_fault_check
+' .x d0 ptr-field dmai_cookie
+' .x 80 struct-field dmai_attr_aug
+' .x 60 struct-field dmai_object
+' .x 58 ptr-field dmai_rdip
+' .x 50 ptr-field dmai_winlst
+' .x 48 ptr-field dmai_pfn0
+' .x 40 ptr-field dmai_pfnlst
+' .x 38 ptr-field dmai_tte
+' .x 34 long-field dmai_winsize
+' .x 30 long-field dmai_nwin
+' .x 2c long-field dmai_flags
+' .x 28 long-field dmai_rflags
+' .x 24 long-field dmai_roffset
+' .x 20 long-field dmai_ndvmapages
+' .x 1c long-field dmai_burstsizes
+' .x 18 long-field dmai_minxfer
+' .x 10 ext-field dmai_offset
+' .x 8 long-field dmai_size
+' .x 0 ext-field dmai_mapping
+
+kdbg-words definitions
+previous
+
+\ end px_dma_impl section
+
+
+vocabulary px_dma_win-words
+h# 20 constant px_dma_win-sz
+20 ' px_dma_win-words c-struct .px_dma_win
+also px_dma_win-words definitions
+
+' .x 18 ext-field win_offset
+' .x 10 ext-field win_size
+' .x c long-field win_curseg
+' .x 8 long-field win_ncookies
+' .x 0 ptr-field win_next
+
+kdbg-words definitions
+previous
+
+\ end px_dma_win section
+
+
+vocabulary px_msi-words
+h# 18 constant px_msi-sz
+18 ' px_msi-words c-struct .px_msi
+also px_msi-words definitions
+
+' .x 14 long-field msi_msiq_id
+' .x 10 long-field msi_msinum
+' .x c long-field msi_state
+' .x 8 long-field msi_inum
+' .x 0 ptr-field msi_dip
+
+kdbg-words definitions
+previous
+
+\ end px_msi section
+
+
+vocabulary px_msi_state-words
+h# 50 constant px_msi_state-sz
+50 ' px_msi_state-words c-struct .px_msi_state
+also px_msi_state-words definitions
+
+' .x 48 ptr-field msi_pool_p
+' .d 44 long-field msi_mem_flg
+' .x 40 long-field msi_type
+' .x 38 struct-field msi_mutex
+' .x 30 ptr-field msi_p
+' .x 28 ext-field msi_addr64_len
+' .x 20 ext-field msi_addr64
+' .x 18 ext-field msi_addr32_len
+' .x 10 ext-field msi_addr32
+' .x c long-field msi_data_width
+' .x 8 long-field msi_data_mask
+' .x 4 long-field msi_1st_msinum
+' .x 0 long-field msi_cnt
+
+kdbg-words definitions
+previous
+
+\ end px_msi_state section
+
+
+vocabulary px_msiq-words
+h# 28 constant px_msiq-sz
+28 ' px_msiq-words c-struct .px_msiq
+also px_msiq-words definitions
+
+' .x 20 short-field msiq_recs2process
+' .x 18 ext-field msiq_new_head_index
+' .x 10 ext-field msiq_curr_head_index
+' .x 8 ptr-field msiq_base_p
+' .x 6 short-field msiq_refcnt
+' .x 4 short-field msiq_state
+' .x 0 long-field msiq_id
+
+kdbg-words definitions
+previous
+
+\ end px_msiq section
+
+
+vocabulary px_msiq_state-words
+h# 38 constant px_msiq_state-sz
+38 ' px_msiq_state-words c-struct .px_msiq_state
+also px_msiq_state-words definitions
+
+' .x 30 ptr-field msiq_buf_p
+' .x 28 ptr-field msiq_p
+' .x 20 long-field msiq_1st_msg_qid
+' .x 1c long-field msiq_msg_qcnt
+' .x 18 long-field msiq_1st_msi_qid
+' .x 14 long-field msiq_msi_qcnt
+' .d 10 long-field msiq_redist_flag
+' .x c long-field msiq_1st_devino
+' .x 8 long-field msiq_1st_msiq_id
+' .x 4 long-field msiq_rec_cnt
+' .x 0 long-field msiq_cnt
+
+kdbg-words definitions
+previous
+
+\ end px_msiq_state section
+
+
+vocabulary msiq_rec-words
+h# 40 constant msiq_rec-sz
+40 ' msiq_rec-words c-struct .msiq_rec
+also msiq_rec-words definitions
+
+' .x 38 ext-field msiq_rec_rsvd3
+' .x 30 struct-field msiq_rec_data
+' .x 28 ext-field msiq_rec_msi_addr
+' .x 26 short-field msiq_rec_rid
+' .x fffffff0 ffff0000 20 bits-field msiq_rec_rsvd2
+' .x 18 ext-field msiq_rec_timestamp
+' .x 10 ext-field msiq_rec_rsvd1
+' .x 8 ext-field msiq_rec_intx
+' .x 7 byte-field msiq_rec_type
+' .x 8 ffffff00 4 bits-field msiq_rec_rsvd0
+' .x 0 long-field msiq_rec_version
+
+kdbg-words definitions
+previous
+
+\ end msiq_rec section
+
+
+vocabulary tavor_state_s-words
+h# e58 constant tavor_state_s-sz
+e58 ' tavor_state_s-words c-struct .tavor_state_s
+also tavor_state_s-words definitions
+
+' .d e54 long-field ts_quiescing
+' .x e50 long-field ts_fw_cmdset
+' .x e48 ptr-field ts_pci_cfghdl
+' l@ ' .x 10 4 e38 array-field ts_fw_gpio
+' .x e30 ptr-field ts_fw_sector
+' .x e28 long-field ts_fw_flashbank
+' .x e24 long-field ts_fw_device_sz
+' .x e20 long-field ts_fw_log_sector_sz
+' .x e18 ext-field ts_fw_flashdev
+' .x e10 long-field ts_fw_flashstarted
+' .x e08 struct-field ts_fw_flashlock
+' .x e00 struct-field ts_info_lock
+' .x df8 ptr-field ts_ks_info
+' .x df0 ptr-field ts_mcgtmp
+' .x de8 ptr-field ts_mcghdl
+' .x de0 struct-field ts_mcglock
+' .x dd8 long-field ts_num_agents
+' .x dd0 ptr-field ts_taskq_agents
+' .x dc8 ptr-field ts_agents
+' .x dc0 ptr-field ts_spec_qp1
+' .x db8 ptr-field ts_spec_qp0
+' .x db0 long-field ts_spec_qpflags
+' .x da8 struct-field ts_spec_qplock
+' .x ba8 struct-field ts_hcaparams
+' .x aa8 struct-field ts_adapter
+' .x 9a8 struct-field ts_devlim
+' .x 8a8 struct-field ts_fw
+' .x 7a8 struct-field ts_ddr
+' .x 7a0 long-field ts_in_evcallb
+' .x 798 struct-field ts_qpn_avl_lock
+' .x 770 struct-field ts_qpn_avl
+' .x 768 ptr-field ts_srqhdl
+' .x 760 ptr-field ts_qphdl
+' .x 758 ptr-field ts_cqhdl
+' x@ ' .x 200 8 558 array-field ts_eqhdl
+' .x 550 ptr-field ts_pdhdl_internal
+' .x 548 long-field ts_cfg_profile_setting
+' .x 540 ptr-field ts_cfg_profile
+' .x 510 struct-field ts_cmd_list
+' .x 4d8 struct-field ts_out_intr_mblist
+' .x 4a0 struct-field ts_in_intr_mblist
+' .x 468 struct-field ts_out_mblist
+' .x 430 struct-field ts_in_mblist
+' .x 428 ptr-field ts_rsrc_hdl
+' .x 420 ptr-field ts_rsrc_cache
+' .x 418 ptr-field ts_ddrvmem
+' .x 3e8 struct-field ts_cmd_regs
+' .x 3e0 long-field ts_open_tr_indx
+' .x 3d8 struct-field ts_uar_lock
+' .x 3d0 ptr-field ts_uar
+' .x 3c8 ptr-field ts_uarpg1_rsrc
+' .x 3c0 ptr-field ts_uarpg0_rsrc_rsrvd
+' l@ ' .x 100 4 2c0 array-field ts_cfg_pdata
+' l@ ' .x 100 4 1c0 array-field ts_cfg_data
+' .x 1b8 ptr-field ts_reg_ddrhdl
+' .x 1b0 ptr-field ts_reg_ddr_baseaddr
+' .x 1a8 ptr-field ts_reg_uarhdl
+' .x 1a0 ptr-field ts_reg_uar_baseaddr
+' .x 198 ptr-field ts_reg_cmdhdl
+' .x 190 ptr-field ts_reg_cmd_baseaddr
+' .x 188 struct-field ts_reg_accattr
+' .x 180 ptr-field ts_ibtfpriv
+' .x 160 struct-field ts_ibtfinfo
+' .x 158 long-field ts_hca_pn_len
+' c@ ' .x 40 1 118 array-field ts_hca_pn
+' c@ ' .x 40 1 d8 array-field ts_hca_name
+' c@ ' .x 40 1 98 array-field ts_nodedesc
+' .x 90 ext-field ts_sysimgguid
+' .x 88 ext-field ts_nodeguid
+' c@ ' .x 50 1 34 array-field ts_attach_buf
+' .x 30 long-field ts_operational_mode
+' .x 2c long-field ts_intrmsi_cap
+' .x 28 long-field ts_intrmsi_pri
+' .x 20 ptr-field ts_intrmsi_hdl
+' .x 1c long-field ts_intrmsi_allocd
+' .x 18 long-field ts_intrmsi_avail
+' .x 14 long-field ts_intrmsi_count
+' .x 10 long-field ts_intr_type_chosen
+' .x c long-field ts_intr_types_avail
+' .x 8 long-field ts_instance
+' .x 0 ptr-field ts_dip
+
+kdbg-words definitions
+previous
+
+\ end tavor_state_s section
+
+
+vocabulary tavor_sw_eq_s-words
+h# 90 constant tavor_sw_eq_s-sz
+90 ' tavor_sw_eq_s-words c-struct .tavor_sw_eq_s
+also tavor_sw_eq_s-words definitions
+
+' .x 40 struct-field eq_eqinfo
+' .x 38 ptr-field eq_func
+' .x 30 ptr-field eq_rsrcp
+' .x 28 ptr-field eq_eqcrsrcp
+' .x 20 long-field eq_evttypemask
+' .x 1c long-field eq_sync
+' .x 18 long-field eq_bufsz
+' .x 10 ptr-field eq_mrhdl
+' .x 8 ptr-field eq_buf
+' .x 4 long-field eq_eqnum
+' .x 0 long-field eq_consindx
+
+kdbg-words definitions
+previous
+
+\ end tavor_sw_eq_s section
+
+
+vocabulary tavor_sw_cq_s-words
+h# f0 constant tavor_sw_cq_s-sz
+f0 ' tavor_sw_cq_s-words c-struct .tavor_sw_cq_s
+also tavor_sw_cq_s-words definitions
+
+' .x a0 struct-field cq_cqinfo
+' .x 98 ptr-field cq_wrid_reap_tail
+' .x 90 ptr-field cq_wrid_reap_head
+' .x 68 struct-field cq_wrid_wqhdr_avl_tree
+' .x 60 struct-field cq_wrid_wqhdr_lock
+' .x 58 ptr-field cq_hdlrarg
+' .x 50 ptr-field cq_rsrcp
+' .x 48 ptr-field cq_cqcrsrcp
+' .x 40 ptr-field cq_umap_dhp
+' .x 3c long-field cq_uarpg
+' .x 38 long-field cq_is_umap
+' .x 34 long-field cq_is_special
+' .x 30 long-field cq_erreqnum
+' .x 2c long-field cq_eqnum
+' .x 28 long-field cq_refcnt
+' .x 24 long-field cq_sync
+' .x 20 long-field cq_bufsz
+' .x 18 ptr-field cq_mrhdl
+' .x 10 ptr-field cq_buf
+' .x c long-field cq_cqnum
+' .x 8 long-field cq_consindx
+' .x 0 struct-field cq_lock
+
+kdbg-words definitions
+previous
+
+\ end tavor_sw_cq_s section
+
+
+vocabulary tavor_sw_qp_s-words
+h# 250 constant tavor_sw_qp_s-sz
+250 ' tavor_sw_qp_s-words c-struct .tavor_sw_qp_s
+also tavor_sw_qp_s-words definitions
+
+' .x 150 struct-field qpc
+' .x 100 struct-field qp_wqinfo
+' .x f8 ptr-field qp_qpn_hdl
+' .d f4 long-field qp_save_srate
+' .x f0 long-field qp_save_mtu
+' .x ec long-field qp_mcg_refcnt
+' .x e8 long-field qp_srq_en
+' .x e0 ptr-field qp_srqhdl
+' .x dc long-field qp_sqd_still_draining
+' .x d8 long-field qp_forward_sqd_event
+' .x d0 ext-field qp_rdb_ddraddr
+' .x c8 ptr-field qp_rdbrsrcp
+' .x c0 ptr-field qp_hdlrarg
+' .x b8 ptr-field qp_rsrcp
+' .x b0 ptr-field qp_qpcrsrcp
+' .x a8 ext-field qp_desc_off
+' .x a0 long-field qp_rq_sgl
+' .x 9c long-field qp_rq_log_wqesz
+' .x 98 long-field qp_rq_bufsz
+' .x 90 ptr-field qp_rq_buf
+' .x 88 ptr-field qp_rq_wqhdr
+' .x 80 ptr-field qp_rq_lastwqeaddr
+' .x 78 ptr-field qp_rq_cqhdl
+' .x 70 long-field qp_sq_sgl
+' .x 6c long-field qp_sq_log_wqesz
+' .x 68 long-field qp_sq_bufsz
+' .x 60 ptr-field qp_sq_buf
+' .x 58 ptr-field qp_sq_wqhdr
+' .x 50 ptr-field qp_sq_lastwqeaddr
+' .x 48 ptr-field qp_sq_cqhdl
+' .x 44 long-field qp_pkeyindx
+' .x 40 long-field qp_portnum
+' .x 38 ptr-field qp_umap_dhp
+' .x 34 long-field qp_uarpg
+' .x 30 long-field qp_is_umap
+' .x 2c long-field qp_is_special
+' .x 28 long-field qp_sq_sigtype
+' .x 20 ptr-field qp_mrhdl
+' .x 1c long-field qp_sync
+' .x 18 long-field qp_serv_type
+' .x 10 ptr-field qp_pdhdl
+' .x c long-field qp_qpnum
+' .x 8 long-field qp_state
+' .x 0 struct-field qp_lock
+
+kdbg-words definitions
+previous
+
+\ end tavor_sw_qp_s section
+
+
+vocabulary tavor_bind_info_s-words
+h# 58 constant tavor_bind_info_s-sz
+58 ' tavor_bind_info_s-words c-struct .tavor_bind_info_s
+also tavor_bind_info_s-words definitions
+
+' .x 50 long-field bi_free_dmahdl
+' .x 4c long-field bi_bypass
+' .x 48 long-field bi_flags
+' .x 44 long-field bi_type
+' .x 40 long-field bi_cookiecnt
+' .x 28 struct-field bi_dmacookie
+' .x 20 ptr-field bi_dmahdl
+' .x 18 ptr-field bi_buf
+' .x 10 ptr-field bi_as
+' .x 8 ext-field bi_len
+' .x 0 ext-field bi_addr
+
+kdbg-words definitions
+previous
+
+\ end tavor_bind_info_s section
+
+
+vocabulary tavor_sw_mr_s-words
+h# c0 constant tavor_sw_mr_s-sz
+c0 ' tavor_sw_mr_s-words c-struct .tavor_sw_mr_s
+also tavor_sw_mr_s-words definitions
+
+' .x b8 ptr-field mr_umem_cbarg2
+' .x b0 ptr-field mr_umem_cbarg1
+' .x a8 ptr-field mr_umem_cbfunc
+' .x a0 ptr-field mr_umemcookie
+' .x 98 long-field mr_is_umem
+' .x 90 ptr-field mr_rsrcp
+' .x 8c long-field mr_logmttpgsz
+' .x 88 long-field mr_rkey
+' .x 84 long-field mr_lkey
+' .d 80 long-field mr_accflag
+' .x 28 struct-field mr_bindinfo
+' .x 20 ptr-field mr_pdhdl
+' .x 18 ptr-field mr_mttrefcntp
+' .x 10 ptr-field mr_mttrsrcp
+' .x 8 ptr-field mr_mptrsrcp
+' .x 0 struct-field mr_lock
+
+kdbg-words definitions
+previous
+
+\ end tavor_sw_mr_s section
+
+
+vocabulary tavor_sw_ah_s-words
+h# 38 constant tavor_sw_ah_s-sz
+38 ' tavor_sw_ah_s-words c-struct .tavor_sw_ah_s
+also tavor_sw_ah_s-words definitions
+
+' .x 34 long-field ah_sync
+' .d 30 long-field ah_save_srate
+' .x 28 ext-field ah_save_guid
+' .x 20 ptr-field ah_rsrcp
+' .x 18 ptr-field ah_udavrsrcp
+' .x 10 ptr-field ah_mrhdl
+' .x 8 ptr-field ah_pdhdl
+' .x 0 struct-field ah_lock
+
+kdbg-words definitions
+previous
+
+\ end tavor_sw_ah_s section
+
+
+vocabulary tavor_sw_mcg_list_s-words
+h# 20 constant tavor_sw_mcg_list_s-sz
+20 ' tavor_sw_mcg_list_s-words c-struct .tavor_sw_mcg_list_s
+also tavor_sw_mcg_list_s-words definitions
+
+' .x 18 ptr-field mcg_rsrcp
+' .x 14 long-field mcg_num_qps
+' .x 10 long-field mcg_next_indx
+' .x 8 ext-field mcg_mgid_l
+' .x 0 ext-field mcg_mgid_h
+
+kdbg-words definitions
+previous
+
+\ end tavor_sw_mcg_list_s section
+
+
+vocabulary tavor_sw_pd_s-words
+h# 18 constant tavor_sw_pd_s-sz
+18 ' tavor_sw_pd_s-words c-struct .tavor_sw_pd_s
+also tavor_sw_pd_s-words definitions
+
+' .x 10 ptr-field pd_rsrcp
+' .x c long-field pd_refcnt
+' .x 8 long-field pd_pdnum
+' .x 0 struct-field pd_lock
+
+kdbg-words definitions
+previous
+
+\ end tavor_sw_pd_s section
+
+
+vocabulary tavor_rsrc_pool_info_s-words
+h# 48 constant tavor_rsrc_pool_info_s-sz
+48 ' tavor_rsrc_pool_info_s-words c-struct .tavor_rsrc_pool_info_s
+also tavor_rsrc_pool_info_s-words definitions
+
+' .x 40 ptr-field rsrc_private
+' .x 38 ptr-field rsrc_state
+' .x 30 ptr-field rsrc_vmp
+' .x 28 ptr-field rsrc_ddr_offset
+' .x 20 ptr-field rsrc_start
+' .x 1c long-field rsrc_quantum
+' .x 18 long-field rsrc_shift
+' .x 10 ext-field rsrc_align
+' .x 8 ext-field rsrc_pool_size
+' .x 4 long-field rsrc_loc
+' .d 0 long-field rsrc_type
+
+kdbg-words definitions
+previous
+
+\ end tavor_rsrc_pool_info_s section
+
+
+vocabulary tavor_rsrc_s-words
+h# 28 constant tavor_rsrc_s-sz
+28 ' tavor_rsrc_s-words c-struct .tavor_rsrc_s
+also tavor_rsrc_s-words definitions
+
+' .x 20 ptr-field tr_dmahdl
+' .x 18 ptr-field tr_acchdl
+' .x 14 long-field tr_indx
+' .x 10 long-field tr_len
+' .x 8 ptr-field tr_addr
+' .d 0 long-field rsrc_type
+
+kdbg-words definitions
+previous
+
+\ end tavor_rsrc_s section
+
+
+vocabulary tavor_cfg_profile_s-words
+h# f0 constant tavor_cfg_profile_s-sz
+f0 ' tavor_cfg_profile_s-words c-struct .tavor_cfg_profile_s
+also tavor_cfg_profile_s-words definitions
+
+' x@ ' .x 10 8 e0 array-field cp_portguid
+' .x d8 ext-field cp_nodeguid
+' .x d0 ext-field cp_sysimgguid
+' .x cc long-field cp_use_msi_if_avail
+' .x c8 long-field cp_max_mem_rd_byte_cnt
+' .x c4 long-field cp_max_out_splt_trans
+' .x c0 long-field cp_ackreq_freq
+' .x bc long-field cp_cmd_poll_max
+' .x b8 long-field cp_cmd_poll_delay
+' .x b4 long-field cp_sw_reset_delay
+' .x b0 long-field cp_qp_wq_inddr
+' .x ac long-field cp_disable_streaming_on_bypass
+' .x a8 long-field cp_iommu_bypass
+' .x a4 long-field cp_consistent_syncoverride
+' .x a0 long-field cp_streaming_consistent
+' .x 9c long-field cp_qp1_agents_in_fw
+' .x 98 long-field cp_qp0_agents_in_fw
+' .x 94 long-field cp_num_ports
+' .x 90 long-field cp_max_vlcap
+' .x 8c long-field cp_max_port_width
+' .x 88 long-field cp_max_mtu
+' .x 84 long-field cp_hca_max_rdma_out_qp
+' .x 80 long-field cp_hca_max_rdma_in_qp
+' .x 7c long-field cp_log_max_gidtbl
+' .x 78 long-field cp_log_max_pkeytbl
+' .x 74 long-field cp_log_num_ah
+' .x 70 long-field cp_log_num_pd
+' .x 6c long-field cp_log_num_uar
+' .x 68 long-field cp_log_outmbox_size
+' .x 64 long-field cp_log_inmbox_size
+' .x 60 long-field cp_log_num_intr_outmbox
+' .x 5c long-field cp_log_num_intr_inmbox
+' .x 58 long-field cp_log_num_outmbox
+' .x 54 long-field cp_log_num_inmbox
+' .x 50 long-field cp_log_num_mttseg
+' .x 4c long-field cp_log_max_mrw_sz
+' .x 48 long-field cp_log_num_mpt
+' .x 44 long-field cp_log_num_mcg_hash
+' .x 40 long-field cp_num_qp_per_mcg
+' .x 3c long-field cp_log_num_mcg
+' .x 38 long-field cp_log_num_rdb
+' .x 34 long-field cp_log_default_eq_sz
+' .x 30 long-field cp_fmr_max_remaps
+' .x 2c long-field cp_fmr_enable
+' .x 28 long-field cp_srq_max_sgl
+' .x 24 long-field cp_log_max_srq_sz
+' .x 20 long-field cp_log_num_srq
+' .x 1c long-field cp_srq_wq_inddr
+' .x 18 long-field cp_srq_enable
+' .x 14 long-field cp_log_max_cq_sz
+' .x 10 long-field cp_log_num_cq
+' .x c long-field cp_wqe_real_max_sgl
+' .x 8 long-field cp_wqe_max_sgl
+' .x 4 long-field cp_log_max_qp_sz
+' .x 0 long-field cp_log_num_qp
+
+kdbg-words definitions
+previous
+
+\ end tavor_cfg_profile_s section
+
+
+vocabulary tavor_agent_list_s-words
+h# 18 constant tavor_agent_list_s-sz
+18 ' tavor_agent_list_s-words c-struct .tavor_agent_list_s
+also tavor_agent_list_s-words definitions
+
+' .x 10 ptr-field agl_ibmfhdl
+' .d c long-field agl_mgmtclass
+' .x 8 long-field agl_port
+' .x 0 ptr-field agl_state
+
+kdbg-words definitions
+previous
+
+\ end tavor_agent_list_s section
+
+
+vocabulary tavor_workq_hdr_s-words
+h# 48 constant tavor_workq_hdr_s-sz
+48 ' tavor_workq_hdr_s-words c-struct .tavor_workq_hdr_s
+also tavor_workq_hdr_s-words definitions
+
+' .x 40 ptr-field wq_wrid_post
+' .x 38 ptr-field wq_wrid_poll
+' .x 34 long-field wq_full
+' .x 30 long-field wq_tail
+' .x 2c long-field wq_head
+' .x 28 long-field wq_size
+' .x 20 ptr-field wq_wrid_wql
+' .x 1c long-field wq_type
+' .x 18 long-field wq_qpn
+' .x 0 struct-field wq_avl_link
+
+kdbg-words definitions
+previous
+
+\ end tavor_workq_hdr_s section
+
+
+vocabulary tavor_wrid_list_hdr_s-words
+h# 70 constant tavor_wrid_list_hdr_s-sz
+70 ' tavor_wrid_list_hdr_s-words c-struct .tavor_wrid_list_hdr_s
+also tavor_wrid_list_hdr_s-words definitions
+
+' .x 68 long-field wl_srq_log_wqesz
+' .x 60 ext-field wl_srq_desc_off
+' .x 58 long-field wl_srq_wq_bufsz
+' .x 50 ptr-field wl_srq_wq_buf
+' .x 48 ptr-field wl_acchdl
+' .x 44 long-field wl_free_list_indx
+' .x 40 long-field wl_srq_en
+' .x 3c long-field wl_tail
+' .x 38 long-field wl_head
+' .x 34 long-field wl_full
+' .x 30 long-field wl_size
+' .x 28 ptr-field wl_wre_old_tail
+' .x 20 ptr-field wl_wre
+' .x 18 ptr-field wl_wqhdr
+' .x 10 ptr-field wl_reap_next
+' .x 8 ptr-field wl_prev
+' .x 0 ptr-field wl_next
+
+kdbg-words definitions
+previous
+
+\ end tavor_wrid_list_hdr_s section
+
+
+vocabulary tavor_wrid_entry_s-words
+h# 10 constant tavor_wrid_entry_s-sz
+10 ' tavor_wrid_entry_s-words c-struct .tavor_wrid_entry_s
+also tavor_wrid_entry_s-words definitions
+
+' .x c long-field wr_signaled_dbd
+' .x 8 long-field wr_wqeaddrsz
+' .x 0 ext-field wr_wrid
+
+kdbg-words definitions
+previous
+
+\ end tavor_wrid_entry_s section
+
+
+vocabulary tavor_mboxlist_s-words
+h# 38 constant tavor_mboxlist_s-sz
+38 ' tavor_mboxlist_s-words c-struct .tavor_mboxlist_s
+also tavor_mboxlist_s-words definitions
+
+' .x 34 long-field mbl_signal
+' .x 30 long-field mbl_pollers
+' .x 2c long-field mbl_waiters
+' .x 28 long-field mbl_entries_free
+' .x 24 long-field mbl_tail_indx
+' .x 20 long-field mbl_head_indx
+' .x 1c long-field mbl_num_alloc
+' .x 18 long-field mbl_list_sz
+' .x 10 ptr-field mbl_mbox
+' .x 8 struct-field mbl_cv
+' .x 0 struct-field mbl_lock
+
+kdbg-words definitions
+previous
+
+\ end tavor_mboxlist_s section
+
+
+vocabulary tavor_mbox_s-words
+h# 30 constant tavor_mbox_s-sz
+30 ' tavor_mbox_s-words c-struct .tavor_mbox_s
+also tavor_mbox_s-words definitions
+
+' .x 2c long-field mb_prev
+' .x 28 long-field mb_next
+' .x 24 long-field mb_indx
+' .x 20 long-field mb_sync
+' .x 18 ptr-field mb_rsrcptr
+' .x 10 ptr-field mb_acchdl
+' .x 8 ext-field mb_mapaddr
+' .x 0 ptr-field mb_addr
+
+kdbg-words definitions
+previous
+
+\ end tavor_mbox_s section
+
+
+vocabulary tavor_cmdlist_s-words
+h# 30 constant tavor_cmdlist_s-sz
+30 ' tavor_cmdlist_s-words c-struct .tavor_cmdlist_s
+also tavor_cmdlist_s-words definitions
+
+' .x 2c long-field cml_waiters
+' .x 28 long-field cml_entries_free
+' .x 24 long-field cml_tail_indx
+' .x 20 long-field cml_head_indx
+' .x 1c long-field cml_num_alloc
+' .x 18 long-field cml_list_sz
+' .x 10 ptr-field cml_cmd
+' .x 8 struct-field cml_cv
+' .x 0 struct-field cml_lock
+
+kdbg-words definitions
+previous
+
+\ end tavor_cmdlist_s section
+
+
+vocabulary tavor_cmd_s-words
+h# 28 constant tavor_cmd_s-sz
+28 ' tavor_cmd_s-words c-struct .tavor_cmd_s
+also tavor_cmd_s-words definitions
+
+' .x 24 long-field cmd_prev
+' .x 20 long-field cmd_next
+' .x 1c long-field cmd_indx
+' .x 18 long-field cmd_status
+' .x 10 ext-field cmd_outparm
+' .x 8 struct-field cmd_comp_cv
+' .x 0 struct-field cmd_comp_lock
+
+kdbg-words definitions
+previous
+
+\ end tavor_cmd_s section
+
